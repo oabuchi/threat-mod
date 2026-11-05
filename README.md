@@ -54,6 +54,25 @@ Claude only extracts the feature description from the inputs and drafts the narr
 verdict come from the policy engine. Accepts PNG/JPG/WebP diagrams, PDF, DOCX, Markdown and text.
 See `examples/assess-demo/` for a full sample, and `.github/workflows/threat-model-assess.yml` to run it on upload.
 
+## Human sign-off and development-time checks
+
+```bash
+# After the Security Team reviews and corrects the AI draft (Tier 2 needs the final SIA rating confirmed)
+python -m threatmod sign-off threat-models/tm-nme-52310/threat-model.yaml \
+  --by "Avery SecTeam:security_team" --sia-rating high --rating-confirmed-by "A. Markell:head_of_information_security" \
+  --changes "Rejected 6 generated threats on Microsoft-internal flows"
+
+# In the PR that implements a security requirement
+python -m threatmod mark-implemented threat-models/tm-nme-52310/threat-model.yaml \
+  --mitigations M-P1-FEAT-004-1 M-P1-S-002-1 --evidence https://dev.azure.com/nerdio/NME/_git/nme/pullrequest/9120
+# ...and in the PR body:  Threat-Model: TM-NME-52310  /  Mitigates: M-P1-FEAT-004-1, M-P1-S-002-1
+
+# Scorecard for sprint review / release stage
+python -m threatmod coverage threat-models --stage release
+```
+
+An AI-drafted model fails `TM-VALIDATED` until a person signs it off; `check-pr` fails `TM-PR-EVIDENCE` if a PR claims a mitigation that isn't marked implemented with evidence; `coverage` shows how many committed mitigations are done, by §6.1 domain and threat severity. See `examples/assess-demo/validated/` for the demo model after review and one implementation PR.
+
 ## What the gates enforce
 
 **Design gate:**
@@ -66,6 +85,7 @@ See `examples/assess-demo/` for a full sample, and `.github/workflows/threat-mod
 - `TM-TREATED`: every Medium+ threat has a treatment
 - `TM-WORKITEM`: every committed mitigation links to a work item that carries it as a security acceptance criterion
 - `TM-ACCEPTANCE`: risk acceptances follow §15 tiers, with no self-approval, a review date of 365 days or less, and a Risk Register ID
+- `TM-VALIDATED`: an AI-drafted model has a human validation record (Security Team for Tier 2, with the SIA rating confirmed)
 - `TM-ARCH-REVIEW` / `TM-APPROVAL`: Tier 2 has the §6.3 review and Security Team sign-off
 
 **Release gate** (everything in the design gate, plus):
@@ -75,7 +95,7 @@ See `examples/assess-demo/` for a full sample, and `.github/workflows/threat-mod
 - `TM-VERIFIED`: Security Team verification, including the attack-surface delta
 - `TM-FRESH`: verification is 30 days old or less and newer than the last model change
 
-**PR check** (`check-pr`): a PR that touches security-relevant paths must contain `Threat-Model: TM-<ID>` or update a model.
+**PR check** (`check-pr`): a PR that touches security-relevant paths must contain `Threat-Model: TM-<ID>` or update a model (`TM-PR-REFERENCE`); any `Mitigates: M-…` it claims must be implemented with evidence in the model (`TM-PR-EVIDENCE`).
 
 ## Using it from a product repository
 

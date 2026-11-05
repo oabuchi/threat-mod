@@ -9,6 +9,9 @@ Commands
   check-pr   fail a PR that touches security-relevant paths without a model reference
   workitems  export mitigations as an Azure DevOps CSV (security acceptance criteria)
   assess     diagram/requirements file(s) -> threat model + security impact assessment (Claude)
+  sign-off   record human validation of an AI-drafted model and SIA (required before approval)
+  mark-implemented  mark mitigations implemented with evidence (PR link)
+  coverage   scorecard of mitigations implemented vs committed, by domain and severity
 
 All thresholds come from policy/threat-modeling-policy.yaml; nothing is hard-coded here.
 """
@@ -305,6 +308,41 @@ def _check_acceptance(policy, doc, t, sev, today, stage, out):
         out.append(Finding("TM-ACCEPTANCE", "error", f"threat {t['id']}: risk acceptance expired on {review} — re-review required"))
 
 
+def _check_validation(policy, doc, tier, today, out):
+    """TM-VALIDATED: an AI-drafted model is a draft until a person signs it off (§4.12)."""
+    prov = doc.get("provenance") or {}
+    val = doc.get("validation")
+    if not prov.get("ai_assisted"):
+        return
+    rules = policy["validation"]
+    if not val:
+        out.append(Finding("TM-VALIDATED", "error",
+                           "AI-drafted model has no human validation record — run `threatmod sign-off` after review (§4.12)"))
+        return
+    vdate, gdate = parse_date(val["date"]), parse_date(prov["generated_on"])
+    if vdate < gdate:
+        out.append(Finding("TM-VALIDATED", "error", f"validation ({vdate}) predates generation ({gdate}); re-validate"))
+    missing = [x for x in rules["required_scope"] if x not in val["scope"]]
+    if missing:
+        out.append(Finding("TM-VALIDATED", "error", f"validation scope missing: {', '.join(missing)}"))
+    allowed = rules["validator_roles_by_tier"].get(tier, [])
+    if tier > 0 and val["validated_by"]["role"] not in allowed:
+        out.append(Finding("TM-VALIDATED", "error",
+                           f"tier {tier} validation must be by {allowed}, not '{val['validated_by']['role']}'"))
+    owner = doc["feature"]["owner"]["name"].strip().lower()
+    if tier == 2 and val["validated_by"]["name"].strip().lower() == owner:
+        out.append(Finding("TM-VALIDATED", "error", "tier 2 validation cannot be done by the feature owner"))
+    if tier in rules["sia_rating_confirmation_required_tiers"]:
+        conf = val.get("sia_rating_confirmed_by")
+        if not val.get("sia_rating") or not conf:
+            out.append(Finding("TM-VALIDATED", "error",
+                               "tier 2: the SIA security impact rating must be confirmed (sia_rating + sia_rating_confirmed_by)"))
+        elif conf["role"] not in rules["sia_rating_confirmer_roles"]:
+            out.append(Finding("TM-VALIDATED", "error", f"SIA rating must be confirmed by {rules['sia_rating_confirmer_roles']}"))
+    if doc["status"] in ("approved", "verified") and any(f.rule == "TM-VALIDATED" for f in out):
+        out.append(Finding("TM-VALIDATED", "error", f"status '{doc['status']}' is not allowed without valid human validation"))
+
+
 def validate(ctx: Ctx, doc: dict, stage: str = "design", today: dt.date | None = None) -> list[Finding]:
     policy, out = ctx.policy, []
     today = today or dt.date.today()
@@ -380,6 +418,7 @@ def validate(ctx: Ctx, doc: dict, stage: str = "design", today: dt.date | None =
         gaps = [d for d in policy["architectural_review_domains"] if d not in ar]
         if gaps:
             out.append(Finding("TM-ARCH-REVIEW", "error", f"architectural review (§6.3) missing domains: {', '.join(gaps)}"))
+    _check_validation(policy, doc, tier, today, out)
     design_approvals = [a for a in doc.get("approvals", []) if a["stage"] == "design"]
     owner = doc["feature"]["owner"]["name"].strip().lower()
     if tier_cfg["security_approval_required"]:
@@ -533,36 +572,153 @@ def report(ctx: Ctx, doc: dict, stage: str, today=None) -> str:
 
 
 # ------------------------------------------------------------------- check-pr
+def _known_models(models_dir: Path) -> dict:
+    known = {}
+    for p in models_dir.rglob("*.yaml") if models_dir.exists() else []:
+        try:
+            d = load_yaml(p)
+            if isinstance(d, dict) and "id" in d and "feature" in d:
+                known[d["id"]] = (p, d)
+        except yaml.YAMLError:
+            continue
+    return known
+
+
 def check_pr(ctx: Ctx, changed: list[str], body: str, models_dir: Path) -> tuple[bool, str]:
+    """TM-PR-REFERENCE + TM-PR-EVIDENCE for one pull request."""
     cfg = ctx.policy["ci_triggers"]
     def hit(path, globs):
-        p = PurePosixPath(path)
-        return any(p.full_match(g) or p.full_match(g.removeprefix("**/")) for g in globs)
+        p = PurePosixPath(path.lower())
+        return any(p.full_match(g.lower()) or p.full_match(g.lower().removeprefix("**/")) for g in globs)
     triggered = [c for c in changed if hit(c, cfg["path_globs"]) and not hit(c, cfg["ignore_globs"])]
-    if not triggered:
-        return True, "No security-relevant paths changed; threat model reference not required."
     model_changes = [c for c in changed if c.startswith(str(models_dir).rstrip("/") + "/")]
+    known = _known_models(models_dir)
     m = re.search(cfg["reference_pattern"], body or "")
-    head = "Security-relevant paths changed:\n  " + "\n  ".join(triggered[:20])
-    if model_changes:
-        return True, head + "\nThreat model updated in this PR: " + ", ".join(model_changes)
-    if not m:
-        return False, head + ("\n\nAdd 'Threat-Model: TM-<ID>' to the PR description (or 'Threat-Model: N/A - <reason ≥10 chars>' "
-                              "reviewed by the Security Team), or update the model under " + str(models_dir) + ".")
-    ref = m.group(1)
-    if ref and ref.upper().startswith("TM-"):
-        known = {}
-        for p in models_dir.rglob("*.yaml") if models_dir.exists() else []:
-            try:
-                d = load_yaml(p)
-                if isinstance(d, dict) and "id" in d:
-                    known[d["id"]] = p
-            except yaml.YAMLError:
-                continue
+    ref = m.group(1) if m and m.group(1).upper().startswith("TM-") else None
+    claims_mitigations = bool(re.search(ctx.policy["coverage"]["mitigates_pattern"], body or ""))
+    lines = []
+
+    # Resolve the model this PR is about: explicit reference, else the single model file it changes.
+    doc = None
+    if ref:
         if ref not in known:
-            return False, head + f"\n\nReferenced {ref} not found under {models_dir}."
-        return True, head + f"\nReferenced threat model {ref} ({known[ref]})."
-    return True, head + f"\nExemption claimed: '{m.group(0)}' — Security Team reviewer must confirm."
+            return False, f"TM-PR-REFERENCE: referenced {ref} not found under {models_dir}."
+        doc = known[ref][1]
+        lines.append(f"Referenced threat model {ref} ({known[ref][0]}).")
+    elif model_changes:
+        changed_ids = [mid for mid, (p, d) in known.items() if str(p) in model_changes]
+        if len(changed_ids) == 1:
+            doc = known[changed_ids[0]][1]
+        lines.append("Threat model updated in this PR: " + ", ".join(model_changes))
+
+    # TM-PR-EVIDENCE: any Mitigates: claim is verified against the model.
+    if claims_mitigations and doc is None:
+        return False, "TM-PR-EVIDENCE: the PR claims mitigations but names no threat model (add 'Threat-Model: TM-<ID>')."
+    if doc is not None:
+        ok, msg = check_pr_evidence(ctx, doc, body)
+        lines.append(msg)
+        if not ok:
+            return False, "\n".join(lines)
+
+    # TM-PR-REFERENCE: security-relevant changes need a model (or a reviewed exemption).
+    if not triggered:
+        return True, "\n".join(["No security-relevant paths changed; threat model reference not required."] + lines)
+    head = "Security-relevant paths changed:\n  " + "\n  ".join(triggered[:20])
+    if doc is not None or model_changes:
+        return True, "\n".join([head] + lines)
+    if m:  # exemption
+        return True, "\n".join([head, f"Exemption claimed: '{m.group(0)}' — Security Team reviewer must confirm."])
+    return False, head + ("\n\nTM-PR-REFERENCE: add 'Threat-Model: TM-<ID>' to the PR description (or 'Threat-Model: N/A - <reason ≥10 chars>' "
+                          "reviewed by the Security Team), or update the model under " + str(models_dir) + ".")
+
+
+def check_pr_evidence(ctx: Ctx, doc: dict, body: str) -> tuple[bool, str]:
+    """TM-PR-EVIDENCE: 'Mitigates: M-…' ids must exist and be implemented with evidence in the model."""
+    mits = {m["id"]: (t, m) for t in doc.get("threats", []) for m in t.get("mitigations", [])}
+    claimed = []
+    for mm in re.finditer(ctx.policy["coverage"]["mitigates_pattern"], body or ""):
+        claimed += [x.strip() for x in re.split(r"[,\s]+", mm.group(1)) if x.strip()]
+    planned = [mid for mid, (t, m) in mits.items() if m["status"] == "planned"]
+    if not claimed:
+        if planned:
+            return True, (f"TM-PR-EVIDENCE warning: model has {len(planned)} planned mitigation(s) and this PR names none. "
+                          "If this PR implements security requirements, add 'Mitigates: M-…' and mark them implemented in the model.")
+        return True, "No mitigations claimed."
+    problems = []
+    for mid in claimed:
+        if mid not in mits:
+            problems.append(f"{mid} is not a mitigation in the model")
+            continue
+        t, m = mits[mid]
+        if m["status"] not in ("implemented", "verified"):
+            problems.append(f"{mid} is '{m['status']}' in the model — set status: implemented with evidence (threatmod mark-implemented)")
+        elif not m.get("evidence"):
+            problems.append(f"{mid} is implemented but has no evidence reference")
+    if problems:
+        return False, "TM-PR-EVIDENCE:\n  " + "\n  ".join(problems)
+    return True, f"TM-PR-EVIDENCE: {len(claimed)} mitigation(s) implemented with evidence: {', '.join(claimed)}"
+
+
+# -------------------------------------------------------------------- coverage
+def coverage(ctx: Ctx, doc: dict) -> dict:
+    """Development-time scorecard: were the threat model's security requirements acted on?"""
+    policy = ctx.policy
+    threats = [t for t in doc.get("threats", []) if t["status"] != "rejected"]
+    treated = [t for t in threats if t["status"] != "identified"]
+    mits = [(t, m) for t in threats if t["status"] in ("mitigation_planned", "mitigated")
+            for m in t.get("mitigations", []) if m["status"] != "proposed"]
+    done = [(t, m) for t, m in mits if m["status"] in ("implemented", "verified") and m.get("evidence")]
+    by_dom: dict[str, dict] = {}
+    for t, m in mits:
+        d = by_dom.setdefault(m["domain"], {"committed": 0, "implemented": 0})
+        d["committed"] += 1
+        d["implemented"] += (t, m) in done
+    by_sev: dict[str, dict] = {}
+    for t, m in mits:
+        sev = severity(policy, t.get("likelihood"), t.get("impact")) or "low"
+        d = by_sev.setdefault(sev, {"committed": 0, "implemented": 0})
+        d["committed"] += 1
+        d["implemented"] += (t, m) in done
+    pct = round(100 * len(done) / len(mits)) if mits else 100
+    prov = doc.get("provenance") or {}
+    return {
+        "id": doc["id"], "tier": doc["tier"], "status": doc["status"],
+        "threats": len(threats), "treated": len(treated),
+        "mitigations_committed": len(mits), "mitigations_implemented": len(done), "implemented_percent": pct,
+        "by_severity": by_sev, "by_domain": by_dom,
+        "ai_assisted": bool(prov.get("ai_assisted")), "validated": bool(doc.get("validation")),
+        "design_approved": any(a["stage"] == "design" for a in doc.get("approvals", [])),
+        "verified": bool(doc.get("verification")),
+        "open_work_items": sorted({m.get("work_item", "") for t, m in mits if (t, m) not in done and m.get("work_item")}),
+    }
+
+
+def coverage_md(rows: list[dict], policy: dict) -> str:
+    md = ["# Threat model coverage", "",
+          "| Model | Tier | Status | Threats treated | Mitigations implemented | Validated | Design approved | Verified |",
+          "|---|---|---|---|---|---|---|---|"]
+    for r in rows:
+        flag = "" if r["implemented_percent"] >= policy["coverage"]["warn_below_percent"] else " ⚠️"
+        md.append(f"| {r['id']} | {r['tier']} | {r['status']} | {r['treated']}/{r['threats']} | "
+                  f"{r['mitigations_implemented']}/{r['mitigations_committed']} ({r['implemented_percent']}%){flag} | "
+                  f"{'yes' if r['validated'] else ('n/a' if not r['ai_assisted'] else '**no**')} | "
+                  f"{'yes' if r['design_approved'] else 'no'} | {'yes' if r['verified'] else 'no'} |")
+    for r in rows:
+        if not r["by_domain"]:
+            continue
+        md += ["", f"## {r['id']}: security requirements by domain (ISMS-DEV-003 §6.1)", "",
+               "| Domain | Committed | Implemented |", "|---|---|---|"]
+        for dom, d in sorted(r["by_domain"].items()):
+            md.append(f"| {dom.replace('_', ' ')} | {d['committed']} | {d['implemented']} |")
+        if r["by_severity"]:
+            md += ["", "| Threat severity | Committed | Implemented |", "|---|---|---|"]
+            for sev in ("critical", "high", "medium", "low"):
+                if sev in r["by_severity"]:
+                    d = r["by_severity"][sev]
+                    md.append(f"| {sev} | {d['committed']} | {d['implemented']} |")
+        if r["open_work_items"]:
+            md += ["", "Open security work items:", ""] + [f"- {w}" for w in r["open_work_items"]]
+    return "\n".join(md) + "\n"
 
 
 # --------------------------------------------------------------------- CLI
@@ -661,6 +817,75 @@ def cmd_check_pr(ctx, a):
     sys.exit(0 if ok else 1)
 
 
+def _person(spec: str, default_role: str) -> dict:
+    name, _, role = spec.partition(":")
+    return {"name": name.strip(), "role": (role.strip() or default_role)}
+
+
+def cmd_sign_off(ctx, a):
+    """Record human validation of an (AI-drafted) model and SIA."""
+    path = Path(a.path)
+    doc = load_yaml(path)
+    today = (parse_date(a.date) if a.date else dt.date.today()).isoformat()
+    val = {"validated_by": _person(a.by, "security_team"), "date": today,
+           "scope": a.scope or ctx.policy["validation"]["required_scope"]}
+    if a.sia_rating:
+        val["sia_rating"] = a.sia_rating
+        val["sia_rating_confirmed_by"] = _person(a.rating_confirmed_by or a.by, "head_of_information_security")
+    if a.changes:
+        val["changes_made"] = a.changes
+    if a.notes:
+        val["notes"] = a.notes
+    doc["validation"] = val
+    doc["last_updated"] = today
+    dump_yaml(doc, path)
+    findings = [f for f in validate(ctx, doc, "design", parse_date(today)) if f.rule == "TM-VALIDATED"]
+    if findings:
+        print("Sign-off recorded but not sufficient:")
+        emit(findings, path, "text")
+        sys.exit(1)
+    print(f"Sign-off recorded in {path} by {val['validated_by']['name']} ({val['validated_by']['role']}) on {today}.")
+
+
+def cmd_mark_implemented(ctx, a):
+    """Mark mitigations implemented with evidence (run by the developer in the PR that implements them)."""
+    path = Path(a.path)
+    doc = load_yaml(path)
+    mits = {m["id"]: (t, m) for t in doc.get("threats", []) for m in t.get("mitigations", [])}
+    ids = [x for chunk in a.mitigations for x in re.split(r"[,\s]+", chunk) if x]
+    unknown = [x for x in ids if x not in mits]
+    if unknown:
+        sys.exit(f"unknown mitigation id(s): {', '.join(unknown)}")
+    today = (parse_date(a.date) if a.date else dt.date.today()).isoformat()
+    for mid in ids:
+        t, m = mits[mid]
+        m["status"] = "verified" if a.verified else "implemented"
+        m["evidence"] = a.evidence
+        if all(x["status"] in ("implemented", "verified") for x in t["mitigations"] if x["status"] != "proposed"):
+            t["status"] = "mitigated"
+    doc["last_updated"] = today
+    dump_yaml(doc, path)
+    print(f"Marked {len(ids)} mitigation(s) {'verified' if a.verified else 'implemented'} with evidence {a.evidence}: {', '.join(ids)}")
+
+
+def cmd_coverage(ctx, a):
+    rows = [coverage(ctx, load_yaml(p)) for p in find_models(a.paths)]
+    if a.format == "json":
+        print(json.dumps(rows, indent=2))
+    else:
+        md = coverage_md(rows, ctx.policy)
+        if a.out:
+            Path(a.out).write_text(md, encoding="utf-8")
+            print(f"wrote {a.out}")
+        else:
+            print(md)
+    floor = ctx.policy["coverage"]["release_fail_below_percent"] if a.stage == "release" else 0
+    low = [r["id"] for r in rows if r["mitigations_committed"] and r["implemented_percent"] < floor]
+    if low:
+        print(f"coverage below {floor}% at {a.stage} stage: {', '.join(low)}", file=sys.stderr)
+        sys.exit(1)
+
+
 def cmd_workitems(ctx, a):
     policy = ctx.policy
     w = csv.writer(sys.stdout)
@@ -707,6 +932,21 @@ def main(argv=None):
 
     s = sub.add_parser("workitems"); s.set_defaults(fn=cmd_workitems); s.add_argument("paths", nargs="+")
     s.add_argument("--committed-only", action="store_true", help="skip mitigations still in 'proposed' status")
+
+    s = sub.add_parser("sign-off", help="record human validation of an AI-drafted model/SIA"); s.set_defaults(fn=cmd_sign_off)
+    s.add_argument("path"); s.add_argument("--by", required=True, help='"Name:role", e.g. "Avery Sec:security_team"')
+    s.add_argument("--scope", nargs="*", choices=["extraction", "threats", "scores", "sia"])
+    s.add_argument("--sia-rating", choices=["low", "medium", "high", "critical"], help="final security impact rating")
+    s.add_argument("--rating-confirmed-by", help='"Name:role" (default: head_of_information_security)')
+    s.add_argument("--changes", nargs="*", help="corrections made during review"); s.add_argument("--notes"); s.add_argument("--date")
+
+    s = sub.add_parser("mark-implemented", help="mark mitigations implemented with evidence"); s.set_defaults(fn=cmd_mark_implemented)
+    s.add_argument("path"); s.add_argument("--mitigations", nargs="+", required=True); s.add_argument("--evidence", required=True)
+    s.add_argument("--verified", action="store_true"); s.add_argument("--date")
+
+    s = sub.add_parser("coverage", help="scorecard: were the model's security requirements implemented?"); s.set_defaults(fn=cmd_coverage)
+    s.add_argument("paths", nargs="+"); s.add_argument("--stage", choices=["design", "release"], default="design")
+    s.add_argument("--format", choices=["md", "json"], default="md"); s.add_argument("--out")
 
     from . import assess as _assess
     _assess.add_parser(sub)

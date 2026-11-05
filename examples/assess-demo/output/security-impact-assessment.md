@@ -4,7 +4,7 @@
 
 | Security impact | Required tier | Threats enumerated | Design gate (as generated) | Recommendation |
 |---|---|---|---|---|
-| **HIGH** | **2** (Enhanced) | 54 (C 0 · H 34 · M 20 · L 0) | 56 open findings | **proceed with conditions** |
+| **HIGH** | **2** (Enhanced) | 54 (C 0 · H 34 · M 20 · L 0) | 57 open findings | **proceed with conditions** |
 
 > Draft produced by `threatmod assess` from the uploaded inputs. The tier, threat list, scores and gate
 > verdict are computed by the policy engine; the narrative is AI-drafted and must be reviewed by the
@@ -212,6 +212,7 @@ Required controls:
 - ❌ **TM-TREATED** threat T-F7-I-GEN (high) has no treatment decision
 - ❌ **TM-TREATED** threat T-F7-D-GEN (high) has no treatment decision
 - ❌ **TM-ARCH-REVIEW** architectural review (§6.3) missing domains: authentication_identity, access_control_least_privilege, encryption_in_transit_at_rest, data_handling_classification_retention, external_interfaces_api_security, consent_data_subject_rights, residual_risk_acceptance
+- ❌ **TM-VALIDATED** AI-drafted model has no human validation record — run `threatmod sign-off` after review (§4.12)
 - ❌ **TM-APPROVAL** Tier 2 requires Security Team design approval (SSDF PW.2)
 
 _Full threat list: [threat-model-report.md](threat-model-report.md) · model: [threat-model.yaml](threat-model.yaml)_

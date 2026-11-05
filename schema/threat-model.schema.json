@@ -222,6 +222,34 @@
         }
       }
     },
+    "provenance": {
+      "type": "object",
+      "required": ["ai_assisted", "generated_on"],
+      "additionalProperties": false,
+      "properties": {
+        "ai_assisted": { "type": "boolean" },
+        "tool": { "type": "string" },
+        "model": { "type": "string" },
+        "generated_on": { "$ref": "#/$defs/date" },
+        "inputs": { "type": "array", "items": { "type": "string" } },
+        "extraction_sha256": { "type": "string" }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "description": "Human sign-off that the (AI-drafted) model and SIA were reviewed and corrected (ISMS-DEV-004 §4.12)",
+      "required": ["validated_by", "date", "scope"],
+      "additionalProperties": false,
+      "properties": {
+        "validated_by": { "$ref": "#/$defs/person" },
+        "date": { "$ref": "#/$defs/date" },
+        "scope": { "type": "array", "minItems": 1, "items": { "enum": ["extraction", "threats", "scores", "sia"] } },
+        "sia_rating": { "enum": ["low", "medium", "high", "critical"] },
+        "sia_rating_confirmed_by": { "$ref": "#/$defs/person" },
+        "changes_made": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "string" }
+      }
+    },
     "approvals": {
       "type": "array",
       "items": {

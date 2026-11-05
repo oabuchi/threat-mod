@@ -227,6 +227,7 @@ gates:
     - TM-WORKITEM     # every mitigation linked to a work item / acceptance criterion
     - TM-ACCEPTANCE   # risk acceptances valid per §15
     - TM-ARCH-REVIEW  # Tier 2: all §6.3 domains recorded
+    - TM-VALIDATED    # AI-drafted models: human validation recorded before approval counts
     - TM-APPROVAL     # Tier 2: Security Team design approval recorded
   release:         # before release (ISMS-DEV-003 §8.1.4, SDL Verification)
     - "@design"
@@ -235,6 +236,31 @@ gates:
     - TM-VERIFIED     # Security Team verified model vs implementation, attack-surface delta reviewed
     - TM-FRESH        # verification within freshness window
   verification_freshness_days: 30
+  pr:              # pull-request level (threatmod check-pr)
+    - TM-PR-REFERENCE   # security-relevant change names a threat model (or an exemption)
+    - TM-PR-EVIDENCE    # mitigations the PR claims ("Mitigates: M-...") exist and are marked implemented with evidence in the model
+
+# -----------------------------------------------------------------------------
+# 8. Human validation of AI-assisted drafts (ISMS-DEV-004 §4.12). A model whose
+#    provenance.ai_assisted is true is a draft until a person records validation.
+# -----------------------------------------------------------------------------
+validation:
+  required_scope: [extraction, threats, scores, sia]
+  validator_roles_by_tier:
+    1: [development_team, qa_team, devops_team, security_team, head_of_information_security]
+    2: [security_team, head_of_information_security]
+  sia_rating_confirmation_required_tiers: [2]
+  sia_rating_confirmer_roles: [head_of_information_security, cpto]
+
+# -----------------------------------------------------------------------------
+# 9. Development-time coverage (threatmod coverage). Percent of committed
+#    mitigations implemented with evidence. Below warn => warning, below fail
+#    at release stage => error. Severity-specific floors are in the gates.
+# -----------------------------------------------------------------------------
+coverage:
+  warn_below_percent: 80
+  release_fail_below_percent: 100
+  mitigates_pattern: '(?im)^\s*mitigates:\s*([A-Z0-9][A-Z0-9_.,\s-]*)$'
 
 # Re-modelling triggers (model status reverts to draft).
 remodel_triggers:

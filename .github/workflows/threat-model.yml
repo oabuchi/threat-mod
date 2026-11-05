@@ -63,6 +63,15 @@ jobs:
           if [ ! -d "$MODELS_DIR" ]; then echo "No $MODELS_DIR directory; nothing to validate."; exit 0; fi
           PYTHONPATH=../threatmod-home python -m threatmod validate "$MODELS_DIR" --stage "$STAGE" --format github
 
+      - name: Coverage scorecard (were the security requirements implemented?)
+        if: always()
+        working-directory: product
+        run: |
+          [ -d "$MODELS_DIR" ] || exit 0
+          PYTHONPATH=../threatmod-home python -m threatmod coverage "$MODELS_DIR" --stage "$STAGE" --out "$RUNNER_TEMP/coverage.md" || status=$?
+          cat "$RUNNER_TEMP/coverage.md" >> "$GITHUB_STEP_SUMMARY"
+          exit ${status:-0}
+
       - name: Publish threat landscape reports
         if: always()
         working-directory: product

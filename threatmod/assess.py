@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import hashlib
 import json
 import mimetypes
 import subprocess
@@ -354,6 +355,11 @@ def assess(ctx: engine.Ctx, inputs: list[Path], out_dir: Path, model_id: str, ow
 
     # 2. model
     doc = build_model(extraction, model_id, owner, work_item, today)
+    doc["provenance"] = {
+        "ai_assisted": True, "tool": "threatmod assess", "model": model if not from_extraction else "fixture",
+        "generated_on": today.isoformat(), "inputs": extraction["_inputs"],
+        "extraction_sha256": hashlib.sha256(json.dumps(extraction, sort_keys=True).encode()).hexdigest(),
+    }
     schema_errs = [f for f in engine.validate(ctx, doc, "design", today) if f.rule == "TM-SCHEMA"]
     if schema_errs:
         raise SystemExit("Extraction produced an invalid model:\n" + "\n".join(f"  {f.message}" for f in schema_errs))

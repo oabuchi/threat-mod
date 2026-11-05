@@ -212,6 +212,25 @@ The release gate runs in the Azure DevOps release pipeline. A failed gate makes 
 
 The threat model file, its Git history, and the Markdown landscape report produced by `threatmod report` together form the security evidence for the feature (ISMS-DEV-003 §6.2 step 5). CI publishes the report as a pipeline artefact on every run. The Security Team archives the release-gate report with the change record (ISMS-CMP-001), and evidence is retained for at least three years.
 
+### 4.12 Human Validation of AI-Assisted Drafts (TM-VALIDATED)
+
+A threat model or SIA produced with AI assistance (§5.3) is not in place until a person has validated it. The model's `provenance.ai_assisted` flag is set by the tooling and cannot be removed; while it is set:
+
+1. A `validation` record is required before any design approval counts and before the model may carry the status `approved` or `verified`. It names the validator, the date, and the scope validated: the extraction (does the model match the diagram and requirements?), the threats (are the generated and feature-specific threats right, and are rejections justified?), the scores, and the SIA narrative.
+2. For Tier 1, any engineer other than the author of the inputs may validate. For Tier 2, the validator must be a member of the Security Team, must not be the Feature Owner, and the SIA's security impact rating must be confirmed by the Head of Information Security (or CPTO) and recorded as the final rating.
+3. Validation must be dated on or after the generation date. Re-running the assessment resets the generation date and requires a new validation.
+4. Corrections made during validation are recorded in `changes_made`, so that the difference between what the AI produced and what was approved is auditable.
+5. The validation is recorded with `threatmod sign-off`, which also checks the record against these rules.
+
+### 4.13 Development-time Verification (TM-PR-REFERENCE, TM-PR-EVIDENCE)
+
+The pipeline verifies that the threat model and its security requirements were acted on during development, not only at release:
+
+1. Every pull request that changes security-relevant paths must name its threat model (§4.1 item 5).
+2. A pull request that implements a security requirement states which mitigations it implements with a `Mitigates: M-<id>, …` line. The pipeline checks that each id exists in the referenced model and is marked `implemented` (or `verified`) with evidence in the same pull request. Developers record this with `threatmod mark-implemented`, which sets the status, the evidence reference and, when all committed mitigations of a threat are done, the threat status `mitigated`.
+3. A pull request that references a model with planned mitigations but names none receives a warning, so reviewers can ask whether security requirements were in scope.
+4. `threatmod coverage` reports, per model, the share of committed mitigations implemented with evidence, broken down by §6.1 domain and by threat severity, with the open security work items. It is published at every pipeline run and reviewed at Sprint Review (ISMS-DEV-003 §4.2). Coverage below 80% raises a warning; at the release stage, committed mitigations must be 100% implemented with evidence or formally accepted.
+
 ## 5. Procedures
 
 ### 5.1 Team Workflow
@@ -219,13 +238,14 @@ The threat model file, its Git history, and the Markdown landscape report produc
 | Step | When | Who | Action | Output |
 |---|---|---|---|---|
 | 1 | Backlog refinement | Feature Owner | `threatmod init --id TM-NMM-48211 ...` and answer triage | Model file with triage |
-| 2 | Backlog refinement | Feature Owner | `threatmod triage <file> --write` | Required tier |
+| 2 | Backlog refinement | Feature Owner | `threatmod triage <file> --write` (or `threatmod assess` from a diagram, then `threatmod sign-off` after review, §4.12) | Required tier |
 | 3 | Design | Dev Team (Security Team for Tier 2) | Model assets, zones, elements, flows and entry points | Scoped model |
 | 4 | Design | Dev Team | `threatmod generate <file> --write`, then add manual threats | STRIDE threat set |
 | 5 | Design session | Dev Team + Security Team | Score, treat, link work items, complete §6.3 review (Tier 2) | Treated model |
 | 6 | Sprint planning | Feature Owner | `threatmod workitems <file>`, then import to Azure DevOps | Security acceptance criteria |
 | 7 | Before development | Reviewer / Security Team | Record design approval; design gate passes in CI | Approved model |
-| 8 | Development | Dev Team | Mark mitigations `implemented` with evidence in the same PRs | Evidence trail |
+| 8 | Development | Dev Team | `threatmod mark-implemented` in the PR that implements each mitigation; PR body lists `Mitigates:` | Evidence trail (TM-PR-EVIDENCE) |
+| 8a | Sprint review | Feature Owner | `threatmod coverage` scorecard reviewed | Open security work items |
 | 9 | Pre-release | Security Team | Verify model against implementation; record verification | Verified model |
 | 10 | Release pipeline | DevOps | Release gate and evidence report | Gate result and archived report |
 
@@ -233,7 +253,7 @@ The threat model file, its Git history, and the Markdown landscape report produc
 
 Product repositories call the reusable workflow `.github/workflows/threat-model.yml`. On every pull request it:
 
-- runs `check-pr` to require a model reference for security-relevant changes
+- runs `check-pr` to require a model reference for security-relevant changes and to verify `Mitigates:` claims against the model
 - runs the design gate (or the release gate on `release/*` branches) on all models
 - publishes each feature's threat landscape report to the job summary and as an artefact
 
@@ -245,7 +265,7 @@ Teams may start a threat model from a feature diagram, data flow diagram or requ
 
 1. The AI model (Claude) is used for two steps only: extracting the feature description (triage answers with cited evidence, assets, trust zones, elements, data flows, entry points, feature-specific threats, assumptions and open questions) and drafting the SIA narrative.
 2. The tier, the STRIDE threat enumeration, the risk scores and the gate verdict are computed by the policy engine from the extraction. They are never taken from the AI model's text, and the SIA is grounded only in the engine's output; any threat identifier in the narrative that is not in the model is flagged.
-3. The outputs are drafts. They carry the status `draft`, fail the design gate by construction (no treatment decisions, no approvals), and must be reviewed and completed by the Development Team and, for Tier 2, the Security Team, exactly as a hand-written model would be. No AI-generated artefact may be used as evidence of design approval or release verification.
+3. The outputs are drafts. They carry the status `draft` and a `provenance.ai_assisted` flag, fail the design gate by construction (no validation, no treatment decisions, no approvals), and must be validated under §4.12 and completed exactly as a hand-written model would be. No AI-generated artefact may be used as evidence of design approval or release verification.
 4. The extraction and the SIA inputs are committed beside the model so reviewers can see what the AI was given and what it produced. Open questions raised by the extraction must be answered before the design gate.
 5. The SIA records a security impact rating (Low to Critical), impact per §6.1 security requirement domain, key risks with required controls, conditions for design approval, verification required before release, compliance notes and a recommendation (proceed, proceed with conditions, or redesign required). The Head of Information Security owns the final rating.
 6. Uploaded diagrams and documents are processed under Nerdio's AI Governance and Acceptable Use Policy. Inputs must not contain credentials, keys or production personal data.
@@ -265,11 +285,14 @@ Teams may start a threat model from a feature diagram, data flow diagram or requ
 | TM-WORKITEM | Design | Every committed mitigation linked to a work item |
 | TM-ACCEPTANCE | Design | Risk acceptances meet §4.8 |
 | TM-ARCH-REVIEW | Design (Tier 2) | All seven §6.3 domains decided |
+| TM-VALIDATED | Design | AI-drafted models carry a valid human validation record (§4.12) |
 | TM-APPROVAL | Design | Tier 1 peer approval; Tier 2 Security Team approval |
 | TM-IMPLEMENTED | Release | High/Critical mitigations implemented with evidence |
 | TM-RESIDUAL | Release | No unaccepted High/Critical residual risk |
 | TM-VERIFIED | Release | Security Team verification with attack-surface delta reviewed |
 | TM-FRESH | Release | Verification ≤30 days old and newer than the last model change |
+| TM-PR-REFERENCE | Pull request | Security-relevant change names a threat model or a reviewed exemption |
+| TM-PR-EVIDENCE | Pull request | Mitigations the PR claims exist and are implemented with evidence in the model |
 
 ### 6.2 Approved Tooling
 
@@ -296,6 +319,8 @@ Changes to `policy/`, `catalog/`, `schema/` and `threatmod/` are made by pull re
 | KPI | Target | Frequency |
 |---|---|---|
 | Tier 1/2 features released with a verified threat model | 100% | Monthly |
+| AI-drafted models validated before design approval | 100% | Monthly |
+| Committed mitigations implemented with evidence at release | 100% | Per release |
 | Security-relevant PRs passing `check-pr` without exemption | ≥ 95% | Monthly |
 | Release-gate bypasses | 0 (each one reported) | Monthly |
 | High/Critical post-release vulnerabilities that the model missed | Trending down; each feeds the threat library | Quarterly |
