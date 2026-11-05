@@ -1,0 +1,95 @@
+# Threat Modelling gate — ISMS-DEV-004 (automates ISMS-DEV-003 §6.2 / §8.1.4)
+#
+# Product repositories call this workflow:
+#   jobs:
+#     threat-model:
+#       uses: oabuchi/threat-mod/.github/workflows/threat-model.yml@main
+#       with: { models-dir: threat-models, stage: design }
+name: threat-model
+
+on:
+  pull_request:
+  workflow_call:
+    inputs:
+      models-dir: { type: string, default: threat-models }
+      stage:      { type: string, default: design, description: "design | release" }
+      threatmod-ref: { type: string, default: main }
+  workflow_dispatch:
+    inputs:
+      stage: { type: choice, options: [design, release], default: release }
+
+permissions:
+  contents: read
+
+env:
+  MODELS_DIR: ${{ inputs.models-dir || 'threat-models' }}
+  STAGE: ${{ inputs.stage || (startsWith(github.base_ref, 'release/') && 'release') || 'design' }}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, path: product }
+
+      - name: Fetch threatmod policy + tooling
+        uses: actions/checkout@v4
+        with:
+          repository: oabuchi/threat-mod
+          ref: ${{ inputs.threatmod-ref || github.sha }}
+          path: threatmod-home
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - run: pip install -r threatmod-home/requirements.txt
+
+      - name: Require a threat model for security-relevant changes
+        if: github.event_name == 'pull_request'
+        working-directory: product
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git diff --name-only "$BASE_SHA"...HEAD > "$RUNNER_TEMP/changed.txt"
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/body.txt"
+          PYTHONPATH=../threatmod-home python -m threatmod check-pr \
+            --changed-files "$RUNNER_TEMP/changed.txt" --pr-body-file "$RUNNER_TEMP/body.txt" \
+            --models-dir "$MODELS_DIR"
+
+      - name: Validate threat models (${{ env.STAGE }} gate)
+        working-directory: product
+        run: |
+          if [ ! -d "$MODELS_DIR" ]; then echo "No $MODELS_DIR directory; nothing to validate."; exit 0; fi
+          PYTHONPATH=../threatmod-home python -m threatmod validate "$MODELS_DIR" --stage "$STAGE" --format github
+
+      - name: Publish threat landscape reports
+        if: always()
+        working-directory: product
+        run: |
+          [ -d "$MODELS_DIR" ] || exit 0
+          mkdir -p "$RUNNER_TEMP/tm-reports"
+          for f in $(find "$MODELS_DIR" -name threat-model.yaml); do
+            id=$(basename "$(dirname "$f")")
+            PYTHONPATH=../threatmod-home python -m threatmod report "$f" --stage "$STAGE" --out "$RUNNER_TEMP/tm-reports/$id.md" || true
+            cat "$RUNNER_TEMP/tm-reports/$id.md" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: threat-model-evidence
+          path: ${{ runner.temp }}/tm-reports
+          retention-days: 90
+          if-no-files-found: ignore
+
+  self-test:
+    if: github.repository == 'oabuchi/threat-mod' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - run: python -m threatmod validate examples --stage design
