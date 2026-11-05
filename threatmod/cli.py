@@ -708,7 +708,10 @@ def main(argv=None):
     s.add_argument("--committed-only", action="store_true", help="skip mitigations still in 'proposed' status")
 
     a = p.parse_args(argv)
-    a.fn(Ctx(a.policy, a.library, a.schema), a)
+    try:
+        a.fn(Ctx(a.policy, a.library, a.schema), a)
+    except BrokenPipeError:  # output piped to `head` etc.
+        sys.stderr.close()
 
 
 if __name__ == "__main__":
