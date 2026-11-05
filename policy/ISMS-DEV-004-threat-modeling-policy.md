@@ -239,6 +239,17 @@ Product repositories call the reusable workflow `.github/workflows/threat-model.
 
 The Azure DevOps template `pipelines/threat-model-gate.yml` runs the release gate in release stages.
 
+### 5.3 AI-assisted Assessment from a Diagram or Requirements Document
+
+Teams may start a threat model from a feature diagram, data flow diagram or requirements document instead of writing the model file by hand. `threatmod assess` reads the uploaded files and produces three artefacts: a draft threat model file, the threat landscape report, and a **Security Impact Assessment (SIA)**.
+
+1. The AI model (Claude) is used for two steps only: extracting the feature description (triage answers with cited evidence, assets, trust zones, elements, data flows, entry points, feature-specific threats, assumptions and open questions) and drafting the SIA narrative.
+2. The tier, the STRIDE threat enumeration, the risk scores and the gate verdict are computed by the policy engine from the extraction. They are never taken from the AI model's text, and the SIA is grounded only in the engine's output; any threat identifier in the narrative that is not in the model is flagged.
+3. The outputs are drafts. They carry the status `draft`, fail the design gate by construction (no treatment decisions, no approvals), and must be reviewed and completed by the Development Team and, for Tier 2, the Security Team, exactly as a hand-written model would be. No AI-generated artefact may be used as evidence of design approval or release verification.
+4. The extraction and the SIA inputs are committed beside the model so reviewers can see what the AI was given and what it produced. Open questions raised by the extraction must be answered before the design gate.
+5. The SIA records a security impact rating (Low to Critical), impact per §6.1 security requirement domain, key risks with required controls, conditions for design approval, verification required before release, compliance notes and a recommendation (proceed, proceed with conditions, or redesign required). The Head of Information Security owns the final rating.
+6. Uploaded diagrams and documents are processed under Nerdio's AI Governance and Acceptable Use Policy. Inputs must not contain credentials, keys or production personal data.
+
 ## 6. Controls and Monitoring
 
 ### 6.1 Automated Gate Rules
@@ -299,9 +310,11 @@ Changes to `policy/`, `catalog/`, `schema/` and `threatmod/` are made by pull re
 | Schema | `schema/threat-model.schema.json` | Structure of a feature threat model |
 | Threat library | `catalog/stride-threat-library.yaml` | Nerdio STRIDE threats and mitigations |
 | Template | `templates/threat-model.template.yaml` | Starting point for `threatmod init` |
-| CLI | `threatmod/` | init, triage, generate, validate, report, check-pr, workitems |
+| CLI | `threatmod/` | init, triage, generate, validate, report, check-pr, workitems, assess |
 | GitHub workflow | `.github/workflows/threat-model.yml` | Reusable PR and release gate |
 | Azure DevOps template | `pipelines/threat-model-gate.yml` | Release-stage gate and evidence |
+| Assess workflow | `.github/workflows/threat-model-assess.yml` | Diagram/requirements upload to draft model and SIA |
+| Assess example | `examples/assess-demo/` | Sample diagram, requirements, and generated SIA |
 | Worked example | `examples/tm-nmm-48211/` | Tier 2 NMM feature with report |
 
 ## Appendix B. Risk Scoring Anchors

@@ -1,0 +1,96 @@
+{
+  "feature": {
+    "title": "Self-service session host restart from Microsoft Teams",
+    "product": "NME",
+    "description": "AVD end users send /restart-my-desktop to the Nerdio Teams bot. Azure Bot Service forwards the activity to a new NME endpoint, which resolves the user's assigned personal session host from the NME database and restarts it through ARM using the NME managed identity, then confirms in Teams. Admins enable the feature per host pool and every restart is audit-logged."
+  },
+  "data_classification": "confidential",
+  "triage": {
+    "architectural_change": {"answer": true, "evidence": "New component 'Teams activity endpoint' and 'Restart worker'; new trust boundary to Azure Bot Service (architecture.png)"},
+    "data_handling_change": {"answer": true, "evidence": "Teams activity payload (user display name, Entra object id, tenant id, message text) is received; new audit log entries written (requirements §Data)"},
+    "new_integration": {"answer": true, "evidence": "Azure Bot Service / Bot Framework REST API integration (flows 2 and 7)"},
+    "authn_authz_change": {"answer": true, "evidence": "New authentication path: Bot Framework JWT validated at POST /api/teams/activity; authorization decision maps Teams user to a host they may restart"},
+    "new_external_entry_point": {"answer": true, "evidence": "POST /api/teams/activity is a new internet-reachable endpoint on the NME App Service"},
+    "privileged_azure_operation": {"answer": true, "evidence": "Restart worker calls ARM virtualMachines/{vm}/restart with Virtual Machine Contributor on the host pool resource group"},
+    "cross_tenant_data": {"answer": false, "evidence": "NME is single-customer; activity carries a tenant id but the requirements do not describe multi-tenant data. Open question: is the bot registered as multi-tenant?"},
+    "restricted_data": {"answer": false, "evidence": "Entra object id and display name are personal data but existing NME data; no credentials, keys or tokens are stored. Bot JWT is transient."},
+    "cryptography_change": {"answer": false, "evidence": "Uses platform TLS and Bot Framework JWT validation; no new cryptographic design"}
+  },
+  "assets": [
+    {"id": "A1", "name": "Teams activity payload (display name, Entra object id, tenant id, message text)", "classification": "confidential", "description": "Personal data of the end user received from Bot Service"},
+    {"id": "A2", "name": "Host assignment mapping (user id -> VM resource id)", "classification": "confidential", "description": "Existing HostAssignments table"},
+    {"id": "A3", "name": "Customer session host VMs", "classification": "restricted", "description": "Customer compute that can be restarted via ARM"},
+    {"id": "A4", "name": "NME audit log", "classification": "confidential", "description": "Who restarted what, when, result"},
+    {"id": "A5", "name": "Bot app credentials / Bot Framework token", "classification": "restricted", "description": "Used to validate inbound JWT and send confirmation cards"}
+  ],
+  "trust_zones": [
+    {"id": "Z0", "name": "Internet / Microsoft 365", "trust": 0, "description": "Teams clients and Azure Bot Service"},
+    {"id": "Z1", "name": "NME App Service (customer Azure subscription)", "trust": 7, "description": "NME application tier"},
+    {"id": "Z2", "name": "Customer Azure resources", "trust": 6, "description": "ARM control plane and Log Analytics in the customer subscription"}
+  ],
+  "elements": [
+    {"id": "E1", "name": "AVD end user (Teams client)", "type": "external_entity", "zone": "Z0", "technology": "Microsoft Teams", "multi_tenant": false, "internet_facing": true, "holds_assets": [], "description": "Issues /restart-my-desktop"},
+    {"id": "E2", "name": "Azure Bot Service", "type": "external_entity", "zone": "Z0", "technology": "Bot Framework", "multi_tenant": false, "internet_facing": true, "holds_assets": ["A1"], "description": "Relays activities and confirmation cards"},
+    {"id": "P1", "name": "Teams activity endpoint", "type": "process", "zone": "Z1", "technology": "App Service webhook endpoint, Bot Framework JWT validation", "multi_tenant": false, "internet_facing": true, "holds_assets": ["A1", "A5"], "description": "POST /api/teams/activity"},
+    {"id": "P2", "name": "Restart worker", "type": "process", "zone": "Z1", "technology": "App Service worker, managed identity (ARM, Virtual Machine Contributor)", "multi_tenant": false, "internet_facing": false, "holds_assets": ["A2"], "description": "Resolves assigned host and restarts it"},
+    {"id": "D1", "name": "NME SQL database", "type": "data_store", "zone": "Z1", "technology": "Azure SQL", "multi_tenant": false, "internet_facing": false, "holds_assets": ["A2"], "description": "HostAssignments table"},
+    {"id": "E3", "name": "Azure Resource Manager", "type": "external_entity", "zone": "Z2", "technology": "ARM REST API", "multi_tenant": false, "internet_facing": false, "holds_assets": ["A3"], "description": "VM restart API"},
+    {"id": "D2", "name": "Log Analytics (NME audit log)", "type": "data_store", "zone": "Z2", "technology": "Azure Log Analytics", "multi_tenant": false, "internet_facing": false, "holds_assets": ["A4"], "description": "Audit events"}
+  ],
+  "data_flows": [
+    {"id": "F1", "from": "E1", "to": "E2", "protocol": "HTTPS (Teams)", "assets": ["A1"], "authenticated": true, "encrypted": true, "description": "1. /restart-my-desktop"},
+    {"id": "F2", "from": "E2", "to": "P1", "protocol": "HTTPS webhook (Bot Framework JWT)", "assets": ["A1"], "authenticated": true, "encrypted": true, "description": "2. activity + JWT"},
+    {"id": "F3", "from": "P1", "to": "P2", "protocol": "In-process job queue", "assets": ["A1"], "authenticated": true, "encrypted": true, "description": "3. enqueue job"},
+    {"id": "F4", "from": "P2", "to": "D1", "protocol": "TDS/TLS", "assets": ["A2"], "authenticated": true, "encrypted": true, "description": "4. lookup host"},
+    {"id": "F5", "from": "P2", "to": "E3", "protocol": "HTTPS (ARM REST)", "assets": ["A3"], "authenticated": true, "encrypted": true, "description": "5. restart VM"},
+    {"id": "F6", "from": "P2", "to": "D2", "protocol": "HTTPS (Log Analytics ingestion)", "assets": ["A4"], "authenticated": true, "encrypted": true, "description": "6. audit event"},
+    {"id": "F7", "from": "P2", "to": "E2", "protocol": "HTTPS (Bot Framework REST API)", "assets": ["A1"], "authenticated": true, "encrypted": true, "description": "7. confirmation card"}
+  ],
+  "entry_points": [
+    {"id": "EP1", "element": "P1", "description": "POST /api/teams/activity", "authentication": "Bot Framework JWT (issuer + audience = bot app id)", "internet_facing": true}
+  ],
+  "feature_specific_threats": [
+    {
+      "title": "User restarts a host that is not their own (assignment confusion)",
+      "stride": "E", "target": "P2",
+      "description": "If the Teams user is resolved by display name or e-mail instead of the Entra object id, or if HostAssignments is stale, the worker may restart another user's personal host or a pooled host. Requirements state pooled hosts must never be restarted.",
+      "likelihood": 3, "impact": 4,
+      "mitigation": "Resolve the user strictly by Entra object id and tenant id from the validated JWT; restart only hosts whose assignment type is personal and whose assigned user id matches; cover with negative tests.",
+      "domain": "access_control"
+    },
+    {
+      "title": "Restart spam against a user's host (self-inflicted or via compromised Teams account)",
+      "stride": "D", "target": "P1",
+      "description": "Repeated /restart-my-desktop commands could keep a host in a restart loop or exhaust ARM throttling limits for the host pool.",
+      "likelihood": 3, "impact": 3,
+      "mitigation": "Enforce the one-restart-per-user-per-10-minutes limit server-side (not in the bot), and a per-host-pool concurrency cap; require the confirmation card when the admin setting is on.",
+      "domain": "availability_resilience"
+    },
+    {
+      "title": "Feature enabled on a host pool without admin intent",
+      "stride": "E", "target": "P2",
+      "description": "The per-host-pool enable flag is the only control that stops any Teams user in the tenant from restarting hosts. If the flag defaults to on, or can be set by a non-admin role, the feature exposes restart to everyone.",
+      "likelihood": 2, "impact": 3,
+      "mitigation": "Default the flag to off per host pool (secure default); restrict changing it to the NME admin role; log changes to the flag.",
+      "domain": "secure_defaults"
+    },
+    {
+      "title": "Spoofed bot activity from a different bot or tenant",
+      "stride": "S", "target": "P1",
+      "description": "A JWT issued by Bot Framework for another bot (wrong audience) or a different Entra tenant (if the bot is multi-tenant) is accepted, letting an attacker in another tenant trigger restarts.",
+      "likelihood": 3, "impact": 4,
+      "mitigation": "Validate issuer, audience (this bot's app id), expiry and signing key via Bot Framework OpenID metadata; reject activities whose tenant id is not the NME customer tenant.",
+      "domain": "authentication_identity"
+    }
+  ],
+  "assumptions": [
+    "The in-process job queue (flow 3) stays inside the App Service; if it becomes a Service Bus/Storage queue it needs its own element and access controls.",
+    "The Bot Framework JWT validation uses the Microsoft-published OpenID metadata and is not a static shared secret."
+  ],
+  "open_questions": [
+    "Is the Nerdio Teams bot registered as single-tenant or multi-tenant in Entra ID? Multi-tenant registration makes tenant-id validation mandatory.",
+    "Does the managed identity's Virtual Machine Contributor scope cover only personal host pools, or the whole resource group including pooled hosts?",
+    "Is the confirmation step (user story 3) enforced server-side, or only in the Teams card UI?",
+    "What is retained from the Teams message text? Free-text message bodies should not be persisted in the audit log."
+  ]
+}

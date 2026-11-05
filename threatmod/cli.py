@@ -8,6 +8,7 @@ Commands
   report     render the feature's threat landscape as Markdown (evidence)
   check-pr   fail a PR that touches security-relevant paths without a model reference
   workitems  export mitigations as an Azure DevOps CSV (security acceptance criteria)
+  assess     diagram/requirements file(s) -> threat model + security impact assessment (Claude)
 
 All thresholds come from policy/threat-modeling-policy.yaml; nothing is hard-coded here.
 """
@@ -706,6 +707,9 @@ def main(argv=None):
 
     s = sub.add_parser("workitems"); s.set_defaults(fn=cmd_workitems); s.add_argument("paths", nargs="+")
     s.add_argument("--committed-only", action="store_true", help="skip mitigations still in 'proposed' status")
+
+    from . import assess as _assess
+    _assess.add_parser(sub)
 
     a = p.parse_args(argv)
     try:

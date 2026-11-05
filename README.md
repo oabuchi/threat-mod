@@ -12,6 +12,7 @@ This repository puts into practice the threat modelling requirements of **ISMS-D
 | GitHub reusable workflow | [`.github/workflows/threat-model.yml`](.github/workflows/threat-model.yml) |
 | Azure DevOps release gate | [`pipelines/threat-model-gate.yml`](pipelines/threat-model-gate.yml) |
 | Worked Tier 2 example | [`examples/tm-nmm-48211/`](examples/tm-nmm-48211/) ([rendered report](examples/tm-nmm-48211/threat-model-report.md)) |
+| Diagram-to-SIA example | [`examples/assess-demo/`](examples/assess-demo/) ([SIA](examples/assess-demo/output/security-impact-assessment.md)) |
 
 ## Quick start for a feature team
 
@@ -37,6 +38,21 @@ python -m threatmod report threat-models/tm-nmm-48211/threat-model.yaml --out la
 # 5. Before release (after Security Team verification)
 python -m threatmod validate threat-models --stage release
 ```
+
+## Start from a diagram or requirements doc (AI-assisted)
+
+```bash
+pip install -r requirements-assess.txt        # anthropic SDK
+export ANTHROPIC_API_KEY=...                   # or `ant auth login`
+python -m threatmod assess design/architecture.png design/requirements.md \
+  --id TM-NME-52310 --owner "Priya Example" --work-item https://dev.azure.com/nerdio/NME/_workitems/edit/52310
+```
+
+Outputs in `threat-models/tm-nme-52310/`: `threat-model.yaml` (draft), `threat-model-report.md`,
+`security-impact-assessment.md`, plus `extraction.json` and `assessment.json` showing what Claude was given and returned.
+Claude only extracts the feature description from the inputs and drafts the narrative; the tier, threats, scores and gate
+verdict come from the policy engine. Accepts PNG/JPG/WebP diagrams, PDF, DOCX, Markdown and text.
+See `examples/assess-demo/` for a full sample, and `.github/workflows/threat-model-assess.yml` to run it on upload.
 
 ## What the gates enforce
 
