@@ -1,0 +1,1420 @@
+schema_version: '1.0'
+id: TM-NMM-48211
+feature:
+  title: PSA ticket webhook triggers Scripted Actions
+  product: NMM
+  description: MSPs configure their PSA (e.g. ConnectWise/Autotask) to send a webhook when a ticket is created.
+    NMM matches the ticket to a customer tenant and runs an approved Scripted Action against that customer's Azure
+    environment using the NMM-managed identity.
+  owner:
+    name: Jordan Example
+    email: jordan@example.com
+    role: development_team
+  work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48211
+  repositories:
+  - nerdio/nmm-core
+  target_release: NMM 7.4
+status: approved
+tier: 2
+last_updated: '2026-11-04'
+data_classification: restricted
+triage:
+  architectural_change: true
+  data_handling_change: true
+  new_integration: true
+  authn_authz_change: false
+  new_external_entry_point: true
+  privileged_azure_operation: true
+  cross_tenant_data: true
+  restricted_data: true
+  cryptography_change: false
+assets:
+- id: A1
+  name: PSA webhook signing secret
+  classification: restricted
+- id: A2
+  name: Ticket payload (customer name, user email, description)
+  classification: confidential
+- id: A3
+  name: Scripted Action content and parameters
+  classification: confidential
+- id: A4
+  name: Customer Azure resources (session hosts, storage)
+  classification: restricted
+- id: A5
+  name: Execution audit log
+  classification: confidential
+trust_zones:
+- id: Z0
+  name: Internet / MSP PSA
+  trust: 0
+- id: Z1
+  name: NMM App (Azure, Nerdio-managed)
+  trust: 7
+- id: Z2
+  name: NMM Data plane (private endpoints)
+  trust: 9
+- id: Z3
+  name: Customer Azure tenant
+  trust: 5
+elements:
+- id: E1
+  name: MSP PSA system
+  type: external_entity
+  zone: Z0
+  technology: Third-party SaaS webhook
+- id: P1
+  name: Webhook receiver
+  type: process
+  zone: Z1
+  technology: Azure Function (webhook, .NET 8)
+  internet_facing: true
+  multi_tenant: true
+  holds_assets:
+  - A1
+  - A2
+- id: P2
+  name: Scripted Action orchestrator
+  type: process
+  zone: Z1
+  technology: App Service worker, PowerShell scripted action runner, managed identity (ARM)
+  multi_tenant: true
+  holds_assets:
+  - A3
+- id: D1
+  name: NMM Key Vault
+  type: data_store
+  zone: Z2
+  technology: Azure Key Vault
+  holds_assets:
+  - A1
+- id: D2
+  name: NMM SQL database
+  type: data_store
+  zone: Z2
+  technology: Azure SQL
+  multi_tenant: true
+  holds_assets:
+  - A3
+  - A5
+- id: E2
+  name: Customer Azure subscription (ARM)
+  type: external_entity
+  zone: Z3
+  technology: Azure Resource Manager
+  holds_assets:
+  - A4
+data_flows:
+- id: F1
+  from: E1
+  to: P1
+  protocol: HTTPS webhook
+  assets:
+  - A2
+  authenticated: true
+  encrypted: true
+- id: F2
+  from: P1
+  to: P2
+  protocol: Service Bus queue
+  assets:
+  - A2
+  authenticated: true
+  encrypted: true
+- id: F3
+  from: P1
+  to: D1
+  protocol: HTTPS (Key Vault SDK)
+  assets:
+  - A1
+  authenticated: true
+  encrypted: true
+- id: F4
+  from: P2
+  to: D2
+  protocol: TDS/TLS
+  assets:
+  - A3
+  - A5
+  authenticated: true
+  encrypted: true
+- id: F5
+  from: P2
+  to: E2
+  protocol: HTTPS (ARM REST)
+  assets:
+  - A4
+  authenticated: true
+  encrypted: true
+entry_points:
+- id: EP1
+  element: P1
+  description: POST /api/psa/{mspId}/webhook
+  authentication: HMAC-SHA256 signature per MSP
+  internet_facing: true
+- id: EP2
+  element: P2
+  description: Service Bus queue consumer
+  authentication: Managed identity (RBAC on queue)
+  internet_facing: false
+threats:
+- id: T-E1-S-004
+  title: Third-party system MSP PSA system is impersonated or compromised
+  stride: S
+  target: E1
+  description: A compromised or spoofed third party (PSA/RMM, IdP, partner API) sends malicious data to Nerdio.
+  source: generated
+  library_ref: LIB-S-004
+  likelihood: 4
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-E1-S-004-1
+    description: Pin endpoints to vendor-documented hosts over TLS 1.2+; validate certificates.
+    domain: api_security
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48231
+  - id: M-E1-S-004-2
+    description: Treat all third-party responses as untrusted input; schema-validate before use.
+    domain: input_validation_output_encoding
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48232
+  residual:
+    likelihood: 2
+    impact: 4
+- id: T-E1-R-001
+  title: Actions performed through MSP PSA system cannot be attributed
+  stride: R
+  target: E1
+  description: Security-relevant actions (create/delete resources, permission changes, data export) are not logged
+    with actor, tenant and correlation ID.
+  source: generated
+  library_ref: LIB-R-001
+  likelihood: 4
+  impact: 4
+  status: transferred
+  mitigations:
+  - id: M-E1-R-001-1
+    description: Emit audit events (actor, tenant/MSP, action, target, result, correlation ID, UTC time) to centralized
+      tamper-evident logging.
+    domain: error_handling_logging
+    status: proposed
+  - id: M-E1-R-001-2
+    description: Retain audit logs per the Logging and Monitoring Policy; restrict deletion.
+    domain: error_handling_logging
+    status: proposed
+  rejection_reason: Attribution of actions inside the MSP's PSA is the PSA vendor's/MSP's responsibility (shared-responsibility
+    model, documented in NMM admin guide).
+- id: T-P1-S-001
+  title: Attacker impersonates a legitimate caller of Webhook receiver
+  stride: S
+  target: P1
+  description: An unauthenticated or weakly authenticated party presents stolen or forged credentials/tokens to
+    Webhook receiver.
+  source: generated
+  library_ref: LIB-S-001
+  likelihood: 4
+  impact: 4
+  status: rejected
+  mitigations:
+  - id: M-P1-S-001-1
+    description: Require Entra ID (OIDC/OAuth 2.0) authentication with MFA enforced via Conditional Access for interactive
+      users.
+    domain: authentication_identity
+    status: proposed
+  - id: M-P1-S-001-2
+    description: Validate token issuer, audience, signature, expiry and tenant (tid) claim on every request.
+    domain: authentication_identity
+    status: proposed
+  rejection_reason: Webhook caller is a machine (PSA), not an interactive user; caller authentication is handled
+    by T-P1-S-002 (HMAC).
+- id: T-P1-S-002
+  title: Forged inbound event/webhook accepted by Webhook receiver
+  stride: S
+  target: P1
+  description: An attacker sends crafted events to Webhook receiver that appear to come from a trusted publisher.
+  source: generated
+  library_ref: LIB-S-002
+  likelihood: 4
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-P1-S-002-1
+    description: Verify HMAC/signature or validation handshake on every inbound event; reject unsigned payloads.
+    domain: api_security
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48233
+  - id: M-P1-S-002-2
+    description: Enforce timestamp/nonce replay window (≤5 min) on inbound events.
+    domain: api_security
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48234
+  residual:
+    likelihood: 2
+    impact: 4
+- id: T-P1-S-003
+  title: Service-to-service identity of Webhook receiver spoofed or credentials stolen
+  stride: S
+  target: P1
+  description: Shared secrets or client secrets used by Webhook receiver are leaked and reused to impersonate the
+    service.
+  source: generated
+  library_ref: LIB-S-003
+  likelihood: 4
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-P1-S-003-1
+    description: Use Azure Managed Identity / workload identity federation instead of client secrets.
+    domain: secrets_management
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48235
+  - id: M-P1-S-003-2
+    description: Where secrets are unavoidable, store in Key Vault with rotation ≤90 days and secrets scanning on
+      every commit.
+    domain: secrets_management
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48236
+  residual:
+    likelihood: 2
+    impact: 4
+- id: T-P1-T-005
+  title: Build or deployment artifact of Webhook receiver tampered with
+  stride: T
+  target: P1
+  description: A compromised dependency, pipeline or artifact injects malicious code into Webhook receiver.
+  source: generated
+  library_ref: LIB-T-005
+  likelihood: 4
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-P1-T-005-1
+    description: Only use dependencies from the Approved Tools/Library List; SCA (Aikido) must pass.
+    domain: third_party_components
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48237
+  - id: M-P1-T-005-2
+    description: Deploy only via the approved Azure DevOps pipeline with integrity-verified artifacts (SSDF PS.2).
+    domain: third_party_components
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48238
+  residual:
+    likelihood: 2
+    impact: 4
+- id: T-P1-R-001
+  title: Actions performed through Webhook receiver cannot be attributed
+  stride: R
+  target: P1
+  description: Security-relevant actions (create/delete resources, permission changes, data export) are not logged
+    with actor, tenant and correlation ID.
+  source: generated
+  library_ref: LIB-R-001
+  likelihood: 4
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-P1-R-001-1
+    description: Emit audit events (actor, tenant/MSP, action, target, result, correlation ID, UTC time) to centralized
+      tamper-evident logging.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48239
+  - id: M-P1-R-001-2
+    description: Retain audit logs per the Logging and Monitoring Policy; restrict deletion.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48240
+  residual:
+    likelihood: 2
+    impact: 4
+- id: T-P1-I-002
+  title: Cross-tenant data exposure in Webhook receiver
+  stride: I
+  target: P1
+  description: Missing or incorrect tenant/MSP scoping lets one customer (or MSP) read another's data — insecure
+    direct object reference across tenants.
+  source: generated
+  library_ref: LIB-I-002
+  likelihood: 4
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-P1-I-002-1
+    description: Derive tenant/MSP scope from the authenticated token, never from request parameters; enforce in
+      a shared data-access layer.
+    domain: tenant_isolation
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48241
+  - id: M-P1-I-002-2
+    description: Add automated cross-tenant authorization tests (tenant A cannot read/act on tenant B) to the CI
+      suite.
+    domain: tenant_isolation
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48242
+  residual:
+    likelihood: 2
+    impact: 5
+- id: T-P1-I-004
+  title: Sensitive data leaked through errors, logs or telemetry of Webhook receiver
+  stride: I
+  target: P1
+  description: Stack traces, tokens, secrets or personal data appear in API errors, Application Insights or logs.
+  source: generated
+  library_ref: LIB-I-004
+  likelihood: 4
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-P1-I-004-1
+    description: Return generic errors to clients; scrub secrets/tokens/PII from logs and telemetry.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48243
+  - id: M-P1-I-004-2
+    description: No secrets in code or config files; reference Key Vault; secrets scanning on every commit.
+    domain: secrets_management
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48244
+  residual:
+    likelihood: 2
+    impact: 5
+- id: T-P1-D-001
+  title: Webhook receiver exhausted by request flooding or expensive operations
+  stride: D
+  target: P1
+  description: Unthrottled public endpoints allow resource exhaustion or cost-based denial of service.
+  source: generated
+  library_ref: LIB-D-001
+  likelihood: 4
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-P1-D-001-1
+    description: Apply per-tenant and per-client rate limiting and request size limits; front with Azure Front Door/WAF.
+    domain: api_security
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48245
+  - id: M-P1-D-001-2
+    description: Set timeouts, bounded queues and autoscale limits with cost alerts.
+    domain: availability_resilience
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48246
+  residual:
+    likelihood: 2
+    impact: 4
+- id: T-P1-D-002
+  title: Noisy-neighbour tenant degrades Webhook receiver for others
+  stride: D
+  target: P1
+  description: One tenant/MSP's workload (bulk operations, large scripted actions) starves shared resources.
+  source: generated
+  library_ref: LIB-D-002
+  likelihood: 4
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-P1-D-002-1
+    description: Enforce per-tenant quotas and fair queuing for background jobs.
+    domain: availability_resilience
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48247
+  residual:
+    likelihood: 2
+    impact: 4
+- id: T-P1-E-001
+  title: Broken authorization in Webhook receiver allows privilege escalation
+  stride: E
+  target: P1
+  description: Missing function-level or object-level authorization lets a lower-privileged user perform admin actions.
+  source: generated
+  library_ref: LIB-E-001
+  likelihood: 4
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-P1-E-001-1
+    description: Enforce RBAC on every endpoint/action server-side (deny by default); cover with authorization unit
+      tests.
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48248
+  residual:
+    likelihood: 2
+    impact: 5
+- id: T-P1-E-002
+  title: Over-privileged Azure/Entra identity used by Webhook receiver
+  stride: E
+  target: P1
+  description: The identity has broader ARM/Graph permissions than required (e.g. Owner at subscription, Directory.ReadWrite.All),
+    amplifying any compromise into customer tenants.
+  source: generated
+  library_ref: LIB-E-002
+  likelihood: 4
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-P1-E-002-1
+    description: Scope ARM role assignments to the minimum resource group/resource; use custom roles where built-ins
+      are too broad.
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48249
+  - id: M-P1-E-002-2
+    description: Request least-privilege Graph application permissions; document each permission's justification
+      in the model.
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48250
+  residual:
+    likelihood: 2
+    impact: 5
+- id: T-P1-E-004
+  title: MSP/tenant user acts on another tenant via Webhook receiver
+  stride: E
+  target: P1
+  description: Authorization checks the user's role but not the tenant/MSP association, allowing cross-tenant actions.
+  source: generated
+  library_ref: LIB-E-004
+  likelihood: 4
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-P1-E-004-1
+    description: Authorize on (user, role, tenant) for every action; include cross-tenant negative tests.
+    domain: tenant_isolation
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48251
+  residual:
+    likelihood: 2
+    impact: 5
+- id: T-P2-S-003
+  title: Service-to-service identity of Scripted Action orchestrator spoofed or credentials stolen
+  stride: S
+  target: P2
+  description: Shared secrets or client secrets used by Scripted Action orchestrator are leaked and reused to impersonate
+    the service.
+  source: generated
+  library_ref: LIB-S-003
+  likelihood: 3
+  impact: 3
+  status: mitigation_planned
+  mitigations:
+  - id: M-P2-S-003-1
+    description: Use Azure Managed Identity / workload identity federation instead of client secrets.
+    domain: secrets_management
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48252
+  - id: M-P2-S-003-2
+    description: Where secrets are unavoidable, store in Key Vault with rotation ≤90 days and secrets scanning on
+      every commit.
+    domain: secrets_management
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48253
+  residual:
+    likelihood: 1
+    impact: 3
+- id: T-P2-T-003
+  title: Script or automation executed by Scripted Action orchestrator is tampered with
+  stride: T
+  target: P2
+  description: Scripts (e.g. Scripted Actions, runbooks) are modified in storage, in a repo, or in transit, leading
+    to code execution in customer environments.
+  source: generated
+  library_ref: LIB-T-003
+  likelihood: 4
+  impact: 3
+  status: mitigation_planned
+  mitigations:
+  - id: M-P2-T-003-1
+    description: Restrict who can author/modify scripts with RBAC; require approval for changes to shared/global
+      scripts.
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48254
+  - id: M-P2-T-003-2
+    description: Verify script integrity (hash/signature) at execution time; log hash of executed content.
+    domain: cryptography
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48255
+  - id: M-P2-T-003-3
+    description: Never interpolate user-controlled values into script text; pass as typed parameters.
+    domain: input_validation_output_encoding
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48256
+  residual:
+    likelihood: 2
+    impact: 3
+- id: T-P2-T-005
+  title: Build or deployment artifact of Scripted Action orchestrator tampered with
+  stride: T
+  target: P2
+  description: A compromised dependency, pipeline or artifact injects malicious code into Scripted Action orchestrator.
+  source: generated
+  library_ref: LIB-T-005
+  likelihood: 3
+  impact: 3
+  status: mitigation_planned
+  mitigations:
+  - id: M-P2-T-005-1
+    description: Only use dependencies from the Approved Tools/Library List; SCA (Aikido) must pass.
+    domain: third_party_components
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48257
+  - id: M-P2-T-005-2
+    description: Deploy only via the approved Azure DevOps pipeline with integrity-verified artifacts (SSDF PS.2).
+    domain: third_party_components
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48258
+  residual:
+    likelihood: 1
+    impact: 3
+- id: T-P2-R-001
+  title: Actions performed through Scripted Action orchestrator cannot be attributed
+  stride: R
+  target: P2
+  description: Security-relevant actions (create/delete resources, permission changes, data export) are not logged
+    with actor, tenant and correlation ID.
+  source: generated
+  library_ref: LIB-R-001
+  likelihood: 3
+  impact: 3
+  status: mitigation_planned
+  mitigations:
+  - id: M-P2-R-001-1
+    description: Emit audit events (actor, tenant/MSP, action, target, result, correlation ID, UTC time) to centralized
+      tamper-evident logging.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48259
+  - id: M-P2-R-001-2
+    description: Retain audit logs per the Logging and Monitoring Policy; restrict deletion.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48260
+  residual:
+    likelihood: 1
+    impact: 3
+- id: T-P2-I-002
+  title: Cross-tenant data exposure in Scripted Action orchestrator
+  stride: I
+  target: P2
+  description: Missing or incorrect tenant/MSP scoping lets one customer (or MSP) read another's data — insecure
+    direct object reference across tenants.
+  source: generated
+  library_ref: LIB-I-002
+  likelihood: 3
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-P2-I-002-1
+    description: Derive tenant/MSP scope from the authenticated token, never from request parameters; enforce in
+      a shared data-access layer.
+    domain: tenant_isolation
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48261
+  - id: M-P2-I-002-2
+    description: Add automated cross-tenant authorization tests (tenant A cannot read/act on tenant B) to the CI
+      suite.
+    domain: tenant_isolation
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48262
+  residual:
+    likelihood: 1
+    impact: 5
+- id: T-P2-I-004
+  title: Sensitive data leaked through errors, logs or telemetry of Scripted Action orchestrator
+  stride: I
+  target: P2
+  description: Stack traces, tokens, secrets or personal data appear in API errors, Application Insights or logs.
+  source: generated
+  library_ref: LIB-I-004
+  likelihood: 3
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-P2-I-004-1
+    description: Return generic errors to clients; scrub secrets/tokens/PII from logs and telemetry.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48263
+  - id: M-P2-I-004-2
+    description: No secrets in code or config files; reference Key Vault; secrets scanning on every commit.
+    domain: secrets_management
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48264
+  residual:
+    likelihood: 1
+    impact: 5
+- id: T-P2-D-002
+  title: Noisy-neighbour tenant degrades Scripted Action orchestrator for others
+  stride: D
+  target: P2
+  description: One tenant/MSP's workload (bulk operations, large scripted actions) starves shared resources.
+  source: generated
+  library_ref: LIB-D-002
+  likelihood: 3
+  impact: 3
+  status: accepted
+  mitigations:
+  - id: M-P2-D-002-1
+    description: Enforce per-tenant quotas and fair queuing for background jobs.
+    domain: availability_resilience
+    status: proposed
+  residual:
+    likelihood: 3
+    impact: 3
+  acceptance:
+    requested_by:
+      name: Jordan Example
+      role: development_team
+    approved_by:
+      name: Head of InfoSec (example)
+      role: head_of_information_security
+    approved_on: '2026-11-04'
+    review_date: '2027-05-04'
+    risk_register_id: RR-2026-117
+    justification: Per-tenant quotas for scripted actions ship in NMM 7.6 (ADO 48990); current global concurrency
+      cap limits blast radius.
+    compensating_controls:
+    - Global concurrency cap of 50 jobs per MSP
+    - Azure Monitor alert on queue depth > 500
+- id: T-P2-E-001
+  title: Broken authorization in Scripted Action orchestrator allows privilege escalation
+  stride: E
+  target: P2
+  description: Missing function-level or object-level authorization lets a lower-privileged user perform admin actions.
+  source: generated
+  library_ref: LIB-E-001
+  likelihood: 3
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-P2-E-001-1
+    description: Enforce RBAC on every endpoint/action server-side (deny by default); cover with authorization unit
+      tests.
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48265
+  residual:
+    likelihood: 1
+    impact: 5
+- id: T-P2-E-002
+  title: Over-privileged Azure/Entra identity used by Scripted Action orchestrator
+  stride: E
+  target: P2
+  description: The identity has broader ARM/Graph permissions than required (e.g. Owner at subscription, Directory.ReadWrite.All),
+    amplifying any compromise into customer tenants.
+  source: generated
+  library_ref: LIB-E-002
+  likelihood: 3
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-P2-E-002-1
+    description: Scope ARM role assignments to the minimum resource group/resource; use custom roles where built-ins
+      are too broad.
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48266
+  - id: M-P2-E-002-2
+    description: Request least-privilege Graph application permissions; document each permission's justification
+      in the model.
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48267
+  residual:
+    likelihood: 1
+    impact: 5
+- id: T-P2-E-003
+  title: Script execution in Scripted Action orchestrator escalates to host or tenant control
+  stride: E
+  target: P2
+  description: Scripts run with high privilege (SYSTEM, Owner) letting a script author gain control beyond their
+    role.
+  source: generated
+  library_ref: LIB-E-003
+  likelihood: 3
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-P2-E-003-1
+    description: Run scripts with the least privileged identity; separate who may author vs. who may execute at
+      tenant scope.
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48268
+  - id: M-P2-E-003-2
+    description: Audit-log every execution with author, executor, target tenant and script hash.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48269
+  residual:
+    likelihood: 1
+    impact: 5
+- id: T-P2-E-004
+  title: MSP/tenant user acts on another tenant via Scripted Action orchestrator
+  stride: E
+  target: P2
+  description: Authorization checks the user's role but not the tenant/MSP association, allowing cross-tenant actions.
+  source: generated
+  library_ref: LIB-E-004
+  likelihood: 3
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-P2-E-004-1
+    description: Authorize on (user, role, tenant) for every action; include cross-tenant negative tests.
+    domain: tenant_isolation
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48270
+  residual:
+    likelihood: 1
+    impact: 5
+- id: T-D1-T-004
+  title: Unauthorized modification of data in NMM Key Vault
+  stride: T
+  target: D1
+  description: Data in the store is altered by a principal with excessive write permissions or via an injection
+    flaw upstream.
+  source: generated
+  library_ref: LIB-T-004
+  likelihood: 3
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-D1-T-004-1
+    description: Grant least-privilege data-plane roles; separate read and write identities.
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48271
+  - id: M-D1-T-004-2
+    description: Enable resource diagnostic/audit logging for write and delete operations.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48272
+  residual:
+    likelihood: 1
+    impact: 4
+- id: T-D1-R-002
+  title: Changes to NMM Key Vault are not traceable
+  stride: R
+  target: D1
+  description: Lack of change history or diagnostic logs on the store prevents investigation of data changes.
+  source: generated
+  library_ref: LIB-R-002
+  likelihood: 3
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-D1-R-002-1
+    description: Enable diagnostic settings to Log Analytics; record change history for security-relevant records.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48273
+  residual:
+    likelihood: 1
+    impact: 4
+- id: T-D1-I-003
+  title: Data at rest in NMM Key Vault exposed
+  stride: I
+  target: D1
+  description: Storage is publicly reachable, uses shared keys/SAS broadly, or is not encrypted with approved algorithms.
+  source: generated
+  library_ref: LIB-I-003
+  likelihood: 3
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-D1-I-003-1
+    description: Encrypt at rest with AES-256 (platform or customer-managed keys per classification).
+    domain: cryptography
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48274
+  - id: M-D1-I-003-2
+    description: Disable public network access; use Private Endpoints; disable shared-key/SAS where possible; use
+      Entra ID auth.
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48275
+  residual:
+    likelihood: 1
+    impact: 4
+- id: T-D1-I-005
+  title: Secrets in NMM Key Vault read by over-privileged identities
+  stride: I
+  target: D1
+  description: Broad Key Vault access policies/RBAC let unrelated services or users read secrets, keys or certificates.
+  source: generated
+  library_ref: LIB-I-005
+  likelihood: 3
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-D1-I-005-1
+    description: Use Key Vault RBAC with per-secret or per-vault least privilege; separate vaults per environment.
+    domain: secrets_management
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48276
+  - id: M-D1-I-005-2
+    description: Enable soft-delete and purge protection; alert on anomalous secret reads.
+    domain: secrets_management
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48277
+  residual:
+    likelihood: 1
+    impact: 4
+- id: T-D1-D-003
+  title: NMM Key Vault unavailable or data destroyed
+  stride: D
+  target: D1
+  description: Deletion, throttling or regional outage makes the store unavailable.
+  source: generated
+  library_ref: LIB-D-003
+  likelihood: 3
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-D1-D-003-1
+    description: Enable soft-delete/backups with tested restore; resource locks on production stores.
+    domain: availability_resilience
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48278
+  residual:
+    likelihood: 1
+    impact: 4
+- id: T-D2-T-004
+  title: Unauthorized modification of data in NMM SQL database
+  stride: T
+  target: D2
+  description: Data in the store is altered by a principal with excessive write permissions or via an injection
+    flaw upstream.
+  source: generated
+  library_ref: LIB-T-004
+  likelihood: 3
+  impact: 3
+  status: mitigation_planned
+  mitigations:
+  - id: M-D2-T-004-1
+    description: Grant least-privilege data-plane roles; separate read and write identities.
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48279
+  - id: M-D2-T-004-2
+    description: Enable resource diagnostic/audit logging for write and delete operations.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48280
+  residual:
+    likelihood: 1
+    impact: 3
+- id: T-D2-R-002
+  title: Changes to NMM SQL database are not traceable
+  stride: R
+  target: D2
+  description: Lack of change history or diagnostic logs on the store prevents investigation of data changes.
+  source: generated
+  library_ref: LIB-R-002
+  likelihood: 3
+  impact: 3
+  status: mitigation_planned
+  mitigations:
+  - id: M-D2-R-002-1
+    description: Enable diagnostic settings to Log Analytics; record change history for security-relevant records.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48281
+  residual:
+    likelihood: 1
+    impact: 3
+- id: T-D2-I-002
+  title: Cross-tenant data exposure in NMM SQL database
+  stride: I
+  target: D2
+  description: Missing or incorrect tenant/MSP scoping lets one customer (or MSP) read another's data — insecure
+    direct object reference across tenants.
+  source: generated
+  library_ref: LIB-I-002
+  likelihood: 3
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-D2-I-002-1
+    description: Derive tenant/MSP scope from the authenticated token, never from request parameters; enforce in
+      a shared data-access layer.
+    domain: tenant_isolation
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48282
+  - id: M-D2-I-002-2
+    description: Add automated cross-tenant authorization tests (tenant A cannot read/act on tenant B) to the CI
+      suite.
+    domain: tenant_isolation
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48283
+  residual:
+    likelihood: 1
+    impact: 5
+- id: T-D2-I-003
+  title: Data at rest in NMM SQL database exposed
+  stride: I
+  target: D2
+  description: Storage is publicly reachable, uses shared keys/SAS broadly, or is not encrypted with approved algorithms.
+  source: generated
+  library_ref: LIB-I-003
+  likelihood: 3
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-D2-I-003-1
+    description: Encrypt at rest with AES-256 (platform or customer-managed keys per classification).
+    domain: cryptography
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48284
+  - id: M-D2-I-003-2
+    description: Disable public network access; use Private Endpoints; disable shared-key/SAS where possible; use
+      Entra ID auth.
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48285
+  residual:
+    likelihood: 1
+    impact: 5
+- id: T-D2-D-003
+  title: NMM SQL database unavailable or data destroyed
+  stride: D
+  target: D2
+  description: Deletion, throttling or regional outage makes the store unavailable.
+  source: generated
+  library_ref: LIB-D-003
+  likelihood: 3
+  impact: 3
+  status: mitigation_planned
+  mitigations:
+  - id: M-D2-D-003-1
+    description: Enable soft-delete/backups with tested restore; resource locks on production stores.
+    domain: availability_resilience
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48286
+  residual:
+    likelihood: 1
+    impact: 3
+- id: T-E2-S-004
+  title: Third-party system Customer Azure subscription (ARM) is impersonated or compromised
+  stride: S
+  target: E2
+  description: A compromised or spoofed third party (PSA/RMM, IdP, partner API) sends malicious data to Nerdio.
+  source: generated
+  library_ref: LIB-S-004
+  likelihood: 3
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-E2-S-004-1
+    description: Pin endpoints to vendor-documented hosts over TLS 1.2+; validate certificates.
+    domain: api_security
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48287
+  - id: M-E2-S-004-2
+    description: Treat all third-party responses as untrusted input; schema-validate before use.
+    domain: input_validation_output_encoding
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48288
+  residual:
+    likelihood: 1
+    impact: 4
+- id: T-E2-R-001
+  title: Actions performed through Customer Azure subscription (ARM) cannot be attributed
+  stride: R
+  target: E2
+  description: Security-relevant actions (create/delete resources, permission changes, data export) are not logged
+    with actor, tenant and correlation ID.
+  source: generated
+  library_ref: LIB-R-001
+  likelihood: 3
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-E2-R-001-1
+    description: Emit audit events (actor, tenant/MSP, action, target, result, correlation ID, UTC time) to centralized
+      tamper-evident logging.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48289
+  - id: M-E2-R-001-2
+    description: Retain audit logs per the Logging and Monitoring Policy; restrict deletion.
+    domain: error_handling_logging
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48290
+  residual:
+    likelihood: 1
+    impact: 4
+- id: T-F1-T-002
+  title: Malicious input injected across trust boundary via MSP PSA system → Webhook receiver (HTTPS webhook)
+  stride: T
+  target: F1
+  description: Data crossing into a higher-trust zone is used in queries, commands, templates or deserialization
+    without validation (SQLi, XSS, XXE, command injection).
+  source: generated
+  library_ref: LIB-T-002
+  likelihood: 4
+  impact: 3
+  status: mitigation_planned
+  mitigations:
+  - id: M-F1-T-002-1
+    description: Allow-list validate and schema-validate input at the boundary; use parameterized queries; encode
+      output.
+    domain: input_validation_output_encoding
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48291
+  - id: M-F1-T-002-2
+    description: Disable unsafe deserialization (e.g. TypeNameHandling.None); disable DTD processing for XML.
+    domain: input_validation_output_encoding
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48292
+  residual:
+    likelihood: 2
+    impact: 3
+- id: T-F1-I-GEN
+  title: Information disclosure from MSP PSA system → Webhook receiver (HTTPS webhook)
+  stride: I
+  target: F1
+  description: Data handled by MSP PSA system → Webhook receiver (HTTPS webhook) could be exposed to unauthorized
+    parties.
+  source: generated
+  library_ref: LIB-I-GEN
+  likelihood: 4
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-F1-I-GEN-1
+    description: Classify data and restrict exposure of MSP PSA system → Webhook receiver (HTTPS webhook) to authorized
+      principals.
+    domain: data_handling_privacy
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48293
+  residual:
+    likelihood: 2
+    impact: 5
+- id: T-F1-D-004
+  title: Oversized or malformed payloads on MSP PSA system → Webhook receiver (HTTPS webhook) crash the receiver
+  stride: D
+  target: F1
+  description: Large, deeply nested or malformed payloads exhaust parser memory/CPU.
+  source: generated
+  library_ref: LIB-D-004
+  likelihood: 4
+  impact: 3
+  status: mitigation_planned
+  mitigations:
+  - id: M-F1-D-004-1
+    description: Enforce payload size, depth and type limits before parsing; include in fuzz testing (ISMS-DEV-003
+      §8.1.3).
+    domain: input_validation_output_encoding
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48294
+  residual:
+    likelihood: 2
+    impact: 3
+- id: T-F2-T-GEN
+  title: Tampering with Webhook receiver → Scripted Action orchestrator (Service Bus queue)
+  stride: T
+  target: F2
+  description: Data or code handled by Webhook receiver → Scripted Action orchestrator (Service Bus queue) could
+    be modified without authorization.
+  source: generated
+  library_ref: LIB-T-GEN
+  likelihood: 2
+  impact: 3
+  status: mitigation_planned
+  mitigations:
+  - id: M-F2-T-GEN-1
+    description: Restrict write access and validate integrity for Webhook receiver → Scripted Action orchestrator
+      (Service Bus queue).
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48295
+  residual:
+    likelihood: 1
+    impact: 3
+- id: T-F2-I-GEN
+  title: Information disclosure from Webhook receiver → Scripted Action orchestrator (Service Bus queue)
+  stride: I
+  target: F2
+  description: Data handled by Webhook receiver → Scripted Action orchestrator (Service Bus queue) could be exposed
+    to unauthorized parties.
+  source: generated
+  library_ref: LIB-I-GEN
+  likelihood: 2
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-F2-I-GEN-1
+    description: Classify data and restrict exposure of Webhook receiver → Scripted Action orchestrator (Service
+      Bus queue) to authorized principals.
+    domain: data_handling_privacy
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48296
+  residual:
+    likelihood: 1
+    impact: 5
+- id: T-F3-T-002
+  title: Malicious input injected across trust boundary via Webhook receiver → NMM Key Vault (HTTPS (Key Vault SDK))
+  stride: T
+  target: F3
+  description: Data crossing into a higher-trust zone is used in queries, commands, templates or deserialization
+    without validation (SQLi, XSS, XXE, command injection).
+  source: generated
+  library_ref: LIB-T-002
+  likelihood: 4
+  impact: 4
+  status: rejected
+  mitigations:
+  - id: M-F3-T-002-1
+    description: Allow-list validate and schema-validate input at the boundary; use parameterized queries; encode
+      output.
+    domain: input_validation_output_encoding
+    status: proposed
+  - id: M-F3-T-002-2
+    description: Disable unsafe deserialization (e.g. TypeNameHandling.None); disable DTD processing for XML.
+    domain: input_validation_output_encoding
+    status: proposed
+  rejection_reason: Key Vault calls use the typed SDK with constant secret names; no attacker-controlled data reaches
+    the vault.
+- id: T-F3-I-GEN
+  title: Information disclosure from Webhook receiver → NMM Key Vault (HTTPS (Key Vault SDK))
+  stride: I
+  target: F3
+  description: Data handled by Webhook receiver → NMM Key Vault (HTTPS (Key Vault SDK)) could be exposed to unauthorized
+    parties.
+  source: generated
+  library_ref: LIB-I-GEN
+  likelihood: 4
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-F3-I-GEN-1
+    description: Classify data and restrict exposure of Webhook receiver → NMM Key Vault (HTTPS (Key Vault SDK))
+      to authorized principals.
+    domain: data_handling_privacy
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48297
+  residual:
+    likelihood: 2
+    impact: 5
+- id: T-F3-D-004
+  title: Oversized or malformed payloads on Webhook receiver → NMM Key Vault (HTTPS (Key Vault SDK)) crash the receiver
+  stride: D
+  target: F3
+  description: Large, deeply nested or malformed payloads exhaust parser memory/CPU.
+  source: generated
+  library_ref: LIB-D-004
+  likelihood: 4
+  impact: 4
+  status: rejected
+  mitigations:
+  - id: M-F3-D-004-1
+    description: Enforce payload size, depth and type limits before parsing; include in fuzz testing (ISMS-DEV-003
+      §8.1.3).
+    domain: input_validation_output_encoding
+    status: proposed
+  rejection_reason: Payloads to Key Vault are fixed-size SDK requests built by P1; no externally supplied payload
+    is forwarded.
+- id: T-F4-T-002
+  title: Malicious input injected across trust boundary via Scripted Action orchestrator → NMM SQL database (TDS/TLS)
+  stride: T
+  target: F4
+  description: Data crossing into a higher-trust zone is used in queries, commands, templates or deserialization
+    without validation (SQLi, XSS, XXE, command injection).
+  source: generated
+  library_ref: LIB-T-002
+  likelihood: 4
+  impact: 3
+  status: mitigation_planned
+  mitigations:
+  - id: M-F4-T-002-1
+    description: Allow-list validate and schema-validate input at the boundary; use parameterized queries; encode
+      output.
+    domain: input_validation_output_encoding
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48298
+  - id: M-F4-T-002-2
+    description: Disable unsafe deserialization (e.g. TypeNameHandling.None); disable DTD processing for XML.
+    domain: input_validation_output_encoding
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48299
+  residual:
+    likelihood: 2
+    impact: 3
+- id: T-F4-I-GEN
+  title: Information disclosure from Scripted Action orchestrator → NMM SQL database (TDS/TLS)
+  stride: I
+  target: F4
+  description: Data handled by Scripted Action orchestrator → NMM SQL database (TDS/TLS) could be exposed to unauthorized
+    parties.
+  source: generated
+  library_ref: LIB-I-GEN
+  likelihood: 2
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-F4-I-GEN-1
+    description: Classify data and restrict exposure of Scripted Action orchestrator → NMM SQL database (TDS/TLS)
+      to authorized principals.
+    domain: data_handling_privacy
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48300
+  residual:
+    likelihood: 1
+    impact: 5
+- id: T-F4-D-004
+  title: Oversized or malformed payloads on Scripted Action orchestrator → NMM SQL database (TDS/TLS) crash the
+    receiver
+  stride: D
+  target: F4
+  description: Large, deeply nested or malformed payloads exhaust parser memory/CPU.
+  source: generated
+  library_ref: LIB-D-004
+  likelihood: 4
+  impact: 3
+  status: rejected
+  mitigations:
+  - id: M-F4-D-004-1
+    description: Enforce payload size, depth and type limits before parsing; include in fuzz testing (ISMS-DEV-003
+      §8.1.3).
+    domain: input_validation_output_encoding
+    status: proposed
+  rejection_reason: All SQL writes are bounded EF Core entities validated at P1/P2; covered by T-F1-D-004 at the
+    boundary.
+- id: T-F5-T-GEN
+  title: Tampering with Scripted Action orchestrator → Customer Azure subscription (ARM) (HTTPS (ARM REST))
+  stride: T
+  target: F5
+  description: Data or code handled by Scripted Action orchestrator → Customer Azure subscription (ARM) (HTTPS (ARM
+    REST)) could be modified without authorization.
+  source: generated
+  library_ref: LIB-T-GEN
+  likelihood: 4
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-F5-T-GEN-1
+    description: Restrict write access and validate integrity for Scripted Action orchestrator → Customer Azure
+      subscription (ARM) (HTTPS (ARM REST)).
+    domain: access_control
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48301
+  residual:
+    likelihood: 2
+    impact: 4
+- id: T-F5-I-GEN
+  title: Information disclosure from Scripted Action orchestrator → Customer Azure subscription (ARM) (HTTPS (ARM
+    REST))
+  stride: I
+  target: F5
+  description: Data handled by Scripted Action orchestrator → Customer Azure subscription (ARM) (HTTPS (ARM REST))
+    could be exposed to unauthorized parties.
+  source: generated
+  library_ref: LIB-I-GEN
+  likelihood: 4
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-F5-I-GEN-1
+    description: Classify data and restrict exposure of Scripted Action orchestrator → Customer Azure subscription
+      (ARM) (HTTPS (ARM REST)) to authorized principals.
+    domain: data_handling_privacy
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48302
+  residual:
+    likelihood: 2
+    impact: 5
+- id: T-F5-D-GEN
+  title: Denial of service against Scripted Action orchestrator → Customer Azure subscription (ARM) (HTTPS (ARM
+    REST))
+  stride: D
+  target: F5
+  description: Scripted Action orchestrator → Customer Azure subscription (ARM) (HTTPS (ARM REST)) could be made
+    unavailable.
+  source: generated
+  library_ref: LIB-D-GEN
+  likelihood: 4
+  impact: 4
+  status: mitigation_planned
+  mitigations:
+  - id: M-F5-D-GEN-1
+    description: Apply limits, timeouts and redundancy for Scripted Action orchestrator → Customer Azure subscription
+      (ARM) (HTTPS (ARM REST)).
+    domain: availability_resilience
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48303
+  residual:
+    likelihood: 2
+    impact: 4
+- id: T-P2-T-100
+  title: Ticket text used to choose or parameterize the Scripted Action
+  stride: T
+  target: P2
+  description: If ticket fields (subject/description) are mapped into script parameters, a PSA user could inject
+    PowerShell into a customer environment.
+  source: manual
+  likelihood: 4
+  impact: 5
+  status: mitigation_planned
+  mitigations:
+  - id: M-P2-T-100-1
+    description: Map tickets to Scripted Actions only via MSP-configured rule IDs; never pass free-text ticket fields
+      as script parameters.
+    domain: input_validation_output_encoding
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48299
+  - id: M-P2-T-100-2
+    description: Allow-list which Scripted Actions may be webhook-triggered; default deny (secure default).
+    domain: secure_defaults
+    status: planned
+    work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/48300
+  residual:
+    likelihood: 1
+    impact: 5
+not_applicable:
+- target: F2
+  stride: D
+  justification: Service Bus queue is internal; volume is bounded by P1 rate limiting (see T-P1-D-001) and dead-lettering.
+architectural_review:
+  authentication_identity:
+    decision: Per-MSP HMAC-SHA256 webhook secret stored in Key Vault, rotated 90 days; P1/P2 use managed identities.
+    reviewed_by: &id001
+      name: Avery SecTeam
+      role: security_team
+    date: '2026-11-04'
+  access_control_least_privilege:
+    decision: P2 managed identity limited to custom role 'NMM Scripted Action Runner' at host-pool RG scope; no
+      subscription Owner.
+    reviewed_by: *id001
+    date: '2026-11-04'
+  encryption_in_transit_at_rest:
+    decision: TLS 1.2+ on all flows; SQL TDE and Key Vault platform encryption; Service Bus with private endpoint.
+    reviewed_by: *id001
+    date: '2026-11-04'
+  data_handling_classification_retention:
+    decision: Only ticket ID and rule ID persisted; ticket body discarded after matching. Audit log retained 1 year.
+    reviewed_by: *id001
+    date: '2026-11-04'
+  external_interfaces_api_security:
+    decision: Webhook endpoint behind Front Door WAF, 64 KB body limit, 60 req/min per MSP, replay window 5 min.
+    reviewed_by: *id001
+    date: '2026-11-04'
+  consent_data_subject_rights:
+    decision: Ticket requester email is not stored; no new DSR obligations. MSP enables integration explicitly (opt-in).
+    reviewed_by: *id001
+    date: '2026-11-04'
+  residual_risk_acceptance:
+    decision: One medium residual (T-P2-D-002) accepted by Head of InfoSec, RR-2026-117.
+    reviewed_by: *id001
+    date: '2026-11-04'
+approvals:
+- stage: design
+  approver: *id001
+  date: '2026-11-04'
+  notes: STRIDE session held 2026-11-03 with Dev + Security.
+references:
+- ISMS-DEV-003 Secure Software Development Policy v3.3 §6.2

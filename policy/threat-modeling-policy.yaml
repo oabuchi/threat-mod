@@ -1,0 +1,270 @@
+# =============================================================================
+# Nerdio Threat Modelling Policy — machine-readable rule set (policy-as-code)
+#
+# Document ID : ISMS-DEV-004 (proposed)
+# Parent      : ISMS-DEV-003 Secure Software Development Policy v3.3
+#               §6.1, §6.2, §6.3, §8.1.4, §10 (PW.1/PW.2), §12.2, §15
+# Owner       : Security Team (Head of Information Security)
+#
+# This file is the single source of truth for every automated decision the
+# `threatmod` tooling makes. The human-readable policy
+# (policy/ISMS-DEV-004-threat-modeling-policy.md) states the requirements; this
+# file encodes the thresholds. Changes require a PR approved by the Security
+# Team (enforced by CODEOWNERS).
+# =============================================================================
+policy:
+  id: ISMS-DEV-004
+  version: "1.0"
+  parent: ISMS-DEV-003 v3.3
+  methodology: STRIDE
+  evidence_retention_years: 3
+
+# -----------------------------------------------------------------------------
+# 1. Applicability triage (ISMS-DEV-003 §6.2: "architectural decisions, data
+#    handling changes, new integrations, or elevated security risk").
+#    Every feature answers these questions. Any "true" answer => model required.
+#    Each question maps to the tier it forces at minimum.
+# -----------------------------------------------------------------------------
+triage:
+  questions:
+    architectural_change:
+      text: Does the feature add or change a service, component, trust boundary, deployment topology or Azure resource type?
+      min_tier: 1
+    data_handling_change:
+      text: Does the feature collect, store, process, transmit, export or delete data in a new way (new fields, new stores, new retention)?
+      min_tier: 1
+    new_integration:
+      text: Does the feature add or change an integration with an external system (Microsoft Graph/ARM, PSA/RMM, IdP, webhook, third-party API)?
+      min_tier: 1
+    authn_authz_change:
+      text: Does the feature change authentication, authorization, RBAC roles, tokens, sessions or secrets handling?
+      min_tier: 2
+    new_external_entry_point:
+      text: Does the feature expose a new internet-reachable endpoint, file upload, or input parser?
+      min_tier: 2
+    privileged_azure_operation:
+      text: Does the feature create, modify or grant privileged permissions in customer Azure / Entra ID tenants?
+      min_tier: 2
+    cross_tenant_data:
+      text: Could the feature cause data or actions to cross MSP, customer or tenant boundaries (NMM multi-tenancy)?
+      min_tier: 2
+    restricted_data:
+      text: Does the feature handle Restricted data (credentials, keys, tokens, personal data subject to GDPR/CCPA)?
+      min_tier: 2
+    cryptography_change:
+      text: Does the feature introduce or change cryptographic design (algorithms, keys, certificates, key storage)?
+      min_tier: 2
+
+  # Tier definitions
+  tiers:
+    0:
+      name: Not required
+      description: No triage trigger fired. The triage record itself is retained as evidence.
+      facilitator: development_team
+      security_approval_required: false
+      architectural_review_required: false
+    1:
+      name: Standard
+      description: Team-run STRIDE model generated and reviewed by the Development Team; Security Team spot-review.
+      facilitator: development_team
+      security_approval_required: false
+      architectural_review_required: false
+    2:
+      name: Enhanced
+      description: Security Team facilitated STRIDE model plus Architectural Security Review (ISMS-DEV-003 §6.3).
+      facilitator: security_team
+      security_approval_required: true
+      architectural_review_required: true
+
+  # Escalate a tier based on the highest data classification in scope.
+  classification_min_tier:
+    public: 0
+    internal: 0
+    confidential: 1
+    restricted: 2
+
+# -----------------------------------------------------------------------------
+# 2. Automated trigger detection in CI. If a PR changes files matching these
+#    globs, the PR must reference a threat model (PR body "Threat-Model: TM-…"
+#    or a change under threat-models/). Tune per repository.
+# -----------------------------------------------------------------------------
+ci_triggers:
+  reference_pattern: '(?i)threat[- ]?model:\s*(TM-[A-Z0-9-]+|n/?a\s*-\s*.{10,})'
+  path_globs:
+    - "**/auth/**"
+    - "**/*Auth*/**"
+    - "**/Identity/**"
+    - "**/*Controller*.cs"
+    - "**/api/**"
+    - "**/webhooks/**"
+    - "**/*.bicep"
+    - "**/*.tf"
+    - "**/arm/**/*.json"
+    - "**/infra/**"
+    - "**/*Crypto*"
+    - "**/*KeyVault*"
+    - "**/*Secret*"
+    - "**/appsettings*.json"
+    - "**/Migrations/**"
+    - "**/package.json"
+    - "**/*.csproj"
+    - "**/requirements*.txt"
+  ignore_globs:
+    - "**/*.md"
+    - "**/test/**"
+    - "**/tests/**"
+    - "**/*.Tests/**"
+
+# -----------------------------------------------------------------------------
+# 3. Risk scoring (ISMS-DEV-003 §6.2 step 3: likelihood and impact scoring).
+#    Risk = likelihood (1-5) x impact (1-5). Bands align to ISMS-SEC-002.
+# -----------------------------------------------------------------------------
+risk:
+  likelihood:
+    1: Rare — requires insider access plus multiple control failures
+    2: Unlikely — requires authenticated privileged access or a non-public flaw
+    3: Possible — reachable by an authenticated user or a known attack pattern
+    4: Likely — reachable from the internet / crosses a trust boundary with low effort
+    5: Almost certain — trivially exploitable, tooling publicly available
+  impact:
+    1: Negligible — no customer data, no service effect
+    2: Minor — Internal data, single-user degradation
+    3: Moderate — Confidential data of one customer, partial outage
+    4: Major — Restricted data, single-tenant compromise, regulatory notification possible
+    5: Severe — cross-tenant / multi-customer compromise, privileged Azure takeover, platform outage
+  bands:            # inclusive lower bounds on the 1-25 score
+    critical: 20
+    high: 12
+    medium: 6
+    low: 1
+  # Default impact for generated threats, by the element's data classification.
+  default_impact_by_classification:
+    public: 2
+    internal: 2
+    confidential: 3
+    restricted: 4
+  default_likelihood: 3
+  trust_boundary_likelihood_uplift: 1   # added when a flow crosses a boundary
+  cross_tenant_impact: 5                 # elements flagged multi_tenant: true
+
+# -----------------------------------------------------------------------------
+# 4. Remediation SLAs for threats discovered after release (ISMS-DEV-003 §12.2,
+#    consistent with ISMS-SEC-002), in calendar days.
+# -----------------------------------------------------------------------------
+remediation_sla_days:
+  critical: 7
+  high: 14
+  medium: 30
+  low: 90
+
+# -----------------------------------------------------------------------------
+# 5. Risk acceptance (ISMS-DEV-003 §15). Approver role by residual severity.
+#    Self-approval is prohibited: approver may not be the requester or the
+#    feature owner. Every acceptance needs a Risk Register ID and review date.
+# -----------------------------------------------------------------------------
+risk_acceptance:
+  approver_roles:
+    low: [head_of_information_security, cpto]
+    medium: [head_of_information_security, cpto]
+    high: [cpto]
+    critical: [cpto]
+  recommendation_required:
+    high: head_of_information_security
+    critical: head_of_information_security
+  management_review_ratification_required: [critical]
+  max_review_interval_days: 365
+  require_risk_register_id: true
+  require_compensating_controls: true
+
+# -----------------------------------------------------------------------------
+# 6. Completeness. STRIDE-per-element (Microsoft SDL). Each element in scope
+#    must have every applicable category addressed — by a threat, or by an
+#    explicit not_applicable entry with justification.
+# -----------------------------------------------------------------------------
+stride_per_element:
+  external_entity: [S, R]
+  process: [S, T, R, I, D, E]
+  data_store: [T, R, I, D]
+  data_flow: [T, I, D]
+
+# Security requirement domains from ISMS-DEV-003 §6.1. Every mitigation is
+# tagged with one so it can become a story acceptance criterion (SSDF PO.4).
+control_domains:
+  - authentication_identity
+  - access_control
+  - cryptography
+  - data_handling_privacy
+  - input_validation_output_encoding
+  - api_security
+  - error_handling_logging
+  - third_party_components
+  - secrets_management
+  - secure_defaults
+  - tenant_isolation
+  - availability_resilience
+
+# Architectural Security Review domains (ISMS-DEV-003 §6.3) — Tier 2 only.
+architectural_review_domains:
+  - authentication_identity
+  - access_control_least_privilege
+  - encryption_in_transit_at_rest
+  - data_handling_classification_retention
+  - external_interfaces_api_security
+  - consent_data_subject_rights
+  - residual_risk_acceptance
+
+# -----------------------------------------------------------------------------
+# 7. Gates. Each rule ID is implemented in threatmod and reported in CI output.
+# -----------------------------------------------------------------------------
+gates:
+  design:          # before development starts (SSDF PW.1/PW.2, SDL Design)
+    - TM-SCHEMA       # file is schema-valid
+    - TM-TRIAGE       # triage answered; declared tier >= computed tier
+    - TM-SCOPE        # assets, elements, trust boundaries, entry points present (tier >= 1)
+    - TM-STRIDE       # STRIDE-per-element completeness
+    - TM-SCORED       # every threat scored
+    - TM-TREATED      # every Medium+ threat treated (mitigation planned or accepted)
+    - TM-WORKITEM     # every mitigation linked to a work item / acceptance criterion
+    - TM-ACCEPTANCE   # risk acceptances valid per §15
+    - TM-ARCH-REVIEW  # Tier 2: all §6.3 domains recorded
+    - TM-VALIDATED    # AI-drafted models: human validation recorded before approval counts
+    - TM-APPROVAL     # Tier 2: Security Team design approval recorded
+  release:         # before release (ISMS-DEV-003 §8.1.4, SDL Verification)
+    - "@design"
+    - TM-IMPLEMENTED  # Critical/High mitigations implemented with evidence
+    - TM-RESIDUAL     # no Critical/High residual risk unless accepted
+    - TM-VERIFIED     # Security Team verified model vs implementation, attack-surface delta reviewed
+    - TM-FRESH        # verification within freshness window
+  verification_freshness_days: 30
+  pr:              # pull-request level (threatmod check-pr)
+    - TM-PR-REFERENCE   # security-relevant change names a threat model (or an exemption)
+    - TM-PR-EVIDENCE    # mitigations the PR claims ("Mitigates: M-...") exist and are marked implemented with evidence in the model
+
+# -----------------------------------------------------------------------------
+# 8. Human validation of AI-assisted drafts (ISMS-DEV-004 §4.12). A model whose
+#    provenance.ai_assisted is true is a draft until a person records validation.
+# -----------------------------------------------------------------------------
+validation:
+  required_scope: [extraction, threats, scores, sia]
+  validator_roles_by_tier:
+    1: [development_team, qa_team, devops_team, security_team, head_of_information_security]
+    2: [security_team, head_of_information_security]
+  sia_rating_confirmation_required_tiers: [2]
+  sia_rating_confirmer_roles: [head_of_information_security, cpto]
+
+# -----------------------------------------------------------------------------
+# 9. Development-time coverage (threatmod coverage). Percent of committed
+#    mitigations implemented with evidence. Below warn => warning, below fail
+#    at release stage => error. Severity-specific floors are in the gates.
+# -----------------------------------------------------------------------------
+coverage:
+  warn_below_percent: 80
+  release_fail_below_percent: 100
+  mitigates_pattern: '(?im)^\s*mitigates:\s*([A-Z0-9][A-Z0-9_.,\s-]*)$'
+
+# Re-modelling triggers (model status reverts to draft).
+remodel_triggers:
+  - material change to architecture, data flows or trust boundaries
+  - new attack surface identified after design approval
+  - Critical or High vulnerability in the feature (RCA per ISMS-DEV-003 §12.3)
+  - Tier 2 feature reaching 12 months since last verification

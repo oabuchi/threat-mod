@@ -1,0 +1,48 @@
+# Nerdio Feature Threat Model — ISMS-DEV-004 (STRIDE)
+# Workflow: init -> answer triage -> `threatmod triage --write` -> model scope ->
+#           `threatmod generate --write` -> score/treat threats -> design gate ->
+#           implement -> Security Team verification -> release gate
+schema_version: "1.0"
+id: TM-PRODUCT-0000
+feature:
+  title: ""
+  product: NMM            # NME | NMM | Platform | Internal
+  description: ""
+  owner: { name: "", email: "", role: development_team }
+  work_item: ""            # ADO/GitHub epic or feature link
+  repositories: []
+  target_release: ""
+status: draft              # draft | in_review | approved | verified | retired
+tier: 0                    # computed by `threatmod triage --write`
+last_updated: ""
+data_classification: internal   # public | internal | confidential | restricted (highest in scope)
+
+# Step 0 — Applicability triage (ISMS-DEV-003 §6.2). Answer every question.
+triage:
+  architectural_change: false
+  data_handling_change: false
+  new_integration: false
+  authn_authz_change: false
+  new_external_entry_point: false
+  privileged_azure_operation: false
+  cross_tenant_data: false
+  restricted_data: false
+  cryptography_change: false
+
+# Step 1 — Assets, trust zones, elements, data flows, entry points
+assets: []         # - { id: A1, name: "...", classification: restricted }
+trust_zones: []    # - { id: Z0, name: Internet, trust: 0 }
+elements: []       # - { id: P1, name: "...", type: process|data_store|external_entity, zone: Z1, technology: "...", multi_tenant: true }
+data_flows: []     # - { id: F1, from: E1, to: P1, protocol: HTTPS, assets: [A1], authenticated: true, encrypted: true }
+entry_points: []   # - { id: EP1, element: P1, description: "...", authentication: "Entra ID", internet_facing: true }
+
+# Step 2/3 — Threats (generated + manual), scored likelihood x impact
+threats: []
+not_applicable: [] # - { target: F1, stride: D, justification: "..." }
+
+# Tier 2 only — Architectural Security Review (ISMS-DEV-003 §6.3)
+architectural_review: {}
+
+# Approvals and release verification (ISMS-DEV-003 §6.2, §8.1.4)
+approvals: []
+references: []

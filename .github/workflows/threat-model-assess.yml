@@ -1,0 +1,72 @@
+# AI-assisted threat model + Security Impact Assessment from an uploaded diagram / requirements doc
+# (ISMS-DEV-004 §5.3). Drop the inputs under threat-models/<id>/inputs/ and push, or run manually.
+#
+# Needs the repository secret ANTHROPIC_API_KEY. The engine (tier, threats, scores, gate) is
+# deterministic; only the extraction and the narrative use Claude, and both are committed for review.
+name: threat-model-assess
+
+on:
+  push:
+    paths: ["threat-models/*/inputs/**"]
+  workflow_dispatch:
+    inputs:
+      id:        { description: "Threat model id, e.g. TM-NME-52310", required: true }
+      owner:     { description: "Feature owner name", required: true }
+      work_item: { description: "Work item URL", required: true }
+      inputs_dir: { description: "Folder with the diagram/requirements files", required: true, default: "threat-models/tm-xxx/inputs" }
+
+permissions:
+  contents: write
+
+jobs:
+  assess:
+    runs-on: ubuntu-latest
+    if: github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: product, fetch-depth: 2 }
+      - uses: actions/checkout@v4
+        with: { repository: oabuchi/threat-mod, path: threatmod-home }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -r threatmod-home/requirements.txt -r threatmod-home/requirements-assess.txt
+      - run: sudo apt-get install -y -q pandoc
+
+      - name: Resolve inputs
+        id: res
+        working-directory: product
+        env:
+          IN_ID: ${{ inputs.id }}
+          IN_DIR: ${{ inputs.inputs_dir }}
+        run: |
+          if [ -n "$IN_DIR" ]; then
+            dir="$IN_DIR"; id="$IN_ID"
+          else
+            dir=$(git diff --name-only HEAD~1 HEAD | grep -E '^threat-models/[^/]+/inputs/' | head -1 | cut -d/ -f1-3)
+            id=$(basename "$(dirname "$dir")" | tr '[:lower:]' '[:upper:]')
+          fi
+          [ -d "$dir" ] || { echo "no inputs dir"; exit 1; }
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"; echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "out=$(dirname "$dir")" >> "$GITHUB_OUTPUT"
+
+      - name: Assess
+        working-directory: product
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PYTHONPATH: ${{ github.workspace }}/threatmod-home
+          THREATMOD_HOME: ${{ github.workspace }}/threatmod-home
+        run: |
+          python -m threatmod assess ${{ steps.res.outputs.dir }}/* \
+            --id "${{ steps.res.outputs.id }}" \
+            --owner "${{ inputs.owner || github.actor }}" \
+            --work-item "${{ inputs.work_item || github.event.head_commit.url }}" \
+            --out "${{ steps.res.outputs.out }}"
+          cat "${{ steps.res.outputs.out }}/security-impact-assessment.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit results
+        working-directory: product
+        run: |
+          git config user.name "threatmod-bot"; git config user.email "threatmod-bot@users.noreply.github.com"
+          git add "${{ steps.res.outputs.out }}"
+          git diff --cached --quiet || git commit -m "threatmod assess: ${{ steps.res.outputs.id }} draft model and SIA [skip ci]"
+          git push

@@ -1,0 +1,6 @@
+# Changes to the policy, rule set, threat library and schema require Security Team review
+# (ISMS-DEV-004 §9). Replace the placeholder below with the Security Team's GitHub team.
+# /policy/   <security-team-handle>
+# /catalog/  <security-team-handle>
+# /schema/   <security-team-handle>
+# /threatmod/ <security-team-handle>
