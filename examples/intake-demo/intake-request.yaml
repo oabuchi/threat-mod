@@ -1,0 +1,29 @@
+title: Bulk-assign Intune compliance policies from NMM
+product: NMM
+owner: Dana Example
+work_item: https://dev.azure.com/nerdio/NMM/_workitems/edit/49870
+target_release: NMM 7.5
+description: >-
+  MSP admins select customer tenants and push a set of Intune device compliance policies to all of them
+  in one action. NMM calls Microsoft Graph in each customer tenant with the NMM app registration.
+repositories: [nerdio/nmm-core]
+data_classification: confidential
+dev_start: "2026-12-08"
+emergency: false
+triage:
+  architectural_change: false
+  data_handling_change: true
+  new_integration: true
+  authn_authz_change: false
+  new_external_entry_point: false
+  privileged_azure_operation: true
+  cross_tenant_data: true
+  restricted_data: false
+  cryptography_change: false
+package:
+  requirements: https://dev.azure.com/nerdio/NMM/_workitems/edit/49870
+  data_flow: bulk-policy-dfd.png
+  identity_permissions: ""
+  data_inventory: ""
+external_parties: [Microsoft Graph (Intune)]
+notes: Uses the existing NMM multi-tenant app registration; adds DeviceManagementConfiguration.ReadWrite.All.

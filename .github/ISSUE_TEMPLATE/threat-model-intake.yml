@@ -1,0 +1,102 @@
+name: Threat model intake
+description: Request threat modelling for a feature (ISMS-DEV-004 §5.0). Submit at backlog refinement, before design starts.
+title: "[Intake] <feature title>"
+labels: ["threat-model", "intake"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Answer every question. Any **Yes** means a threat model is required; the tooling computes the tier and tells you what to attach.
+        Attach the diagram and requirements by dragging files into the "Intake package" field, or paste links.
+  - type: input
+    id: product
+    attributes: { label: Product, description: "NME, NMM, Platform or Internal" }
+    validations: { required: true }
+  - type: input
+    id: owner
+    attributes: { label: Feature owner, description: "Development Team lead accountable for the model" }
+    validations: { required: true }
+  - type: input
+    id: work_item
+    attributes: { label: Work item, description: "ADO epic / feature URL" }
+    validations: { required: true }
+  - type: input
+    id: target_release
+    attributes: { label: Target release }
+    validations: { required: true }
+  - type: input
+    id: dev_start
+    attributes: { label: Planned development start, description: "YYYY-MM-DD" }
+    validations: { required: true }
+  - type: input
+    id: repositories
+    attributes: { label: Repositories, description: "Comma-separated, e.g. nerdio/nmm-core" }
+    validations: { required: true }
+  - type: textarea
+    id: description
+    attributes: { label: Description, description: "2–4 sentences: what it does, for whom, what changes" }
+    validations: { required: true }
+  - type: dropdown
+    id: data_classification
+    attributes:
+      label: Highest data classification in scope
+      options: [public, internal, confidential, restricted]
+    validations: { required: true }
+  - type: dropdown
+    id: emergency
+    attributes: { label: Emergency change (hotfix under ISMS-DEV-003 §9.1)?, options: ["No", "Yes"] }
+    validations: { required: true }
+  - type: dropdown
+    id: architectural_change
+    attributes: { label: "Triage 1 — Does the feature add or change a service, component, trust boundary, deployment topology or Azure resource type?", options: ["No", "Yes"] }
+    validations: { required: true }
+  - type: dropdown
+    id: data_handling_change
+    attributes: { label: "Triage 2 — Does the feature collect, store, process, transmit, export or delete data in a new way?", options: ["No", "Yes"] }
+    validations: { required: true }
+  - type: dropdown
+    id: new_integration
+    attributes: { label: "Triage 3 — Does the feature add or change an integration with an external system (Graph/ARM, PSA/RMM, IdP, webhook, third-party API)?", options: ["No", "Yes"] }
+    validations: { required: true }
+  - type: dropdown
+    id: authn_authz_change
+    attributes: { label: "Triage 4 — Does the feature change authentication, authorization, RBAC roles, tokens, sessions or secrets handling?", options: ["No", "Yes"] }
+    validations: { required: true }
+  - type: dropdown
+    id: new_external_entry_point
+    attributes: { label: "Triage 5 — Does the feature expose a new internet-reachable endpoint, file upload, or input parser?", options: ["No", "Yes"] }
+    validations: { required: true }
+  - type: dropdown
+    id: privileged_azure_operation
+    attributes: { label: "Triage 6 — Does the feature create, modify or grant privileged permissions in customer Azure / Entra ID tenants?", options: ["No", "Yes"] }
+    validations: { required: true }
+  - type: dropdown
+    id: cross_tenant_data
+    attributes: { label: "Triage 7 — Could the feature cause data or actions to cross MSP, customer or tenant boundaries?", options: ["No", "Yes"] }
+    validations: { required: true }
+  - type: dropdown
+    id: restricted_data
+    attributes: { label: "Triage 8 — Does the feature handle Restricted data (credentials, keys, tokens, personal data under GDPR/CCPA)?", options: ["No", "Yes"] }
+    validations: { required: true }
+  - type: dropdown
+    id: cryptography_change
+    attributes: { label: "Triage 9 — Does the feature introduce or change cryptographic design (algorithms, keys, certificates, key storage)?", options: ["No", "Yes"] }
+    validations: { required: true }
+  - type: textarea
+    id: package
+    attributes:
+      label: Intake package
+      description: |
+        One line per item, `item: file-or-url`. Tier 1 needs requirements + data_flow; Tier 2 also identity_permissions + data_inventory.
+      placeholder: |
+        requirements: https://dev.azure.com/nerdio/NMM/_workitems/edit/48211
+        data_flow: architecture.png
+        identity_permissions: permissions.md
+        data_inventory: data-inventory.xlsx
+    validations: { required: true }
+  - type: textarea
+    id: external_parties
+    attributes: { label: Third parties involved (optional) }
+  - type: textarea
+    id: notes
+    attributes: { label: Notes for the Security Team (optional) }

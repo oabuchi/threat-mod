@@ -1,0 +1,246 @@
+# =============================================================================
+# Nerdio STRIDE Threat Library (ISMS-DEV-004 Appendix A)
+#
+# Used by `threatmod generate` to enumerate threats per element / data flow
+# (STRIDE-per-element, Microsoft SDL). Entries are matched on:
+#   applies_to : element types and/or "data_flow"
+#   stride     : category
+#   when       : optional conditions — all must hold
+#       crosses_boundary   (flows)      source and target in different trust zones
+#       enters_higher_trust (flows)     target zone is more trusted than source zone
+#       internet_facing    (any)        element flagged internet_facing / zone trust 0
+#       multi_tenant       (any)        element (or either flow end) multi_tenant
+#       encrypted          (flows)      value of flow.encrypted
+#       authenticated      (flows)      value of flow.authenticated
+#       technology_any     (elements)   case-insensitive substring of element.technology
+#       classification_in  (any)        effective data classification
+# Mitigations carry an ISMS-DEV-003 §6.1 control domain so they can be
+# copied into the story as security acceptance criteria.
+#
+# Owned by the Security Team. Add entries via PR; include a reference.
+# =============================================================================
+threats:
+
+  # ---------------------------------------------------------------- Spoofing
+  - id: LIB-S-001
+    stride: S
+    applies_to: [process]
+    when: { internet_facing: true }
+    title: Attacker impersonates a legitimate caller of {name}
+    description: An unauthenticated or weakly authenticated party presents stolen or forged credentials/tokens to {name}.
+    mitigations:
+      - { domain: authentication_identity, text: "Require Entra ID (OIDC/OAuth 2.0) authentication with MFA enforced via Conditional Access for interactive users." }
+      - { domain: authentication_identity, text: "Validate token issuer, audience, signature, expiry and tenant (tid) claim on every request." }
+  - id: LIB-S-002
+    stride: S
+    applies_to: [process]
+    when: { technology_any: [webhook, function, "event grid", "service bus"] }
+    title: Forged inbound event/webhook accepted by {name}
+    description: An attacker sends crafted events to {name} that appear to come from a trusted publisher.
+    mitigations:
+      - { domain: api_security, text: "Verify HMAC/signature or validation handshake on every inbound event; reject unsigned payloads." }
+      - { domain: api_security, text: "Enforce timestamp/nonce replay window (≤5 min) on inbound events." }
+  - id: LIB-S-003
+    stride: S
+    applies_to: [process]
+    when: { technology_any: ["app service", function, aks, container, "azure"] }
+    title: Service-to-service identity of {name} spoofed or credentials stolen
+    description: Shared secrets or client secrets used by {name} are leaked and reused to impersonate the service.
+    mitigations:
+      - { domain: secrets_management, text: "Use Azure Managed Identity / workload identity federation instead of client secrets." }
+      - { domain: secrets_management, text: "Where secrets are unavoidable, store in Key Vault with rotation ≤90 days and secrets scanning on every commit." }
+  - id: LIB-S-004
+    stride: S
+    applies_to: [external_entity]
+    title: Third-party system {name} is impersonated or compromised
+    description: A compromised or spoofed third party (PSA/RMM, IdP, partner API) sends malicious data to Nerdio.
+    mitigations:
+      - { domain: api_security, text: "Pin endpoints to vendor-documented hosts over TLS 1.2+; validate certificates." }
+      - { domain: input_validation_output_encoding, text: "Treat all third-party responses as untrusted input; schema-validate before use." }
+
+  # --------------------------------------------------------------- Tampering
+  - id: LIB-T-001
+    stride: T
+    applies_to: [data_flow]
+    when: { encrypted: false }
+    title: Data on flow {name} modified in transit
+    description: The flow is not encrypted, allowing an on-path attacker to alter data.
+    likelihood_delta: 1
+    mitigations:
+      - { domain: cryptography, text: "Encrypt the flow with TLS 1.2+ using approved cipher suites (Cryptographic Controls Policy)." }
+  - id: LIB-T-002
+    stride: T
+    applies_to: [data_flow]
+    when: { enters_higher_trust: true }
+    title: Malicious input injected across trust boundary via {name}
+    description: Data crossing into a higher-trust zone is used in queries, commands, templates or deserialization without validation (SQLi, XSS, XXE, command injection).
+    mitigations:
+      - { domain: input_validation_output_encoding, text: "Allow-list validate and schema-validate input at the boundary; use parameterized queries; encode output." }
+      - { domain: input_validation_output_encoding, text: "Disable unsafe deserialization (e.g. TypeNameHandling.None); disable DTD processing for XML." }
+  - id: LIB-T-003
+    stride: T
+    applies_to: [process]
+    when: { technology_any: [powershell, "scripted action", runbook, script, "custom script extension"] }
+    title: Script or automation executed by {name} is tampered with
+    description: Scripts (e.g. Scripted Actions, runbooks) are modified in storage, in a repo, or in transit, leading to code execution in customer environments.
+    likelihood_delta: 1
+    mitigations:
+      - { domain: access_control, text: "Restrict who can author/modify scripts with RBAC; require approval for changes to shared/global scripts." }
+      - { domain: cryptography, text: "Verify script integrity (hash/signature) at execution time; log hash of executed content." }
+      - { domain: input_validation_output_encoding, text: "Never interpolate user-controlled values into script text; pass as typed parameters." }
+  - id: LIB-T-004
+    stride: T
+    applies_to: [data_store]
+    title: Unauthorized modification of data in {name}
+    description: Data in the store is altered by a principal with excessive write permissions or via an injection flaw upstream.
+    mitigations:
+      - { domain: access_control, text: "Grant least-privilege data-plane roles; separate read and write identities." }
+      - { domain: error_handling_logging, text: "Enable resource diagnostic/audit logging for write and delete operations." }
+  - id: LIB-T-005
+    stride: T
+    applies_to: [process]
+    title: Build or deployment artifact of {name} tampered with
+    description: A compromised dependency, pipeline or artifact injects malicious code into {name}.
+    mitigations:
+      - { domain: third_party_components, text: "Only use dependencies from the Approved Tools/Library List; SCA (Aikido) must pass." }
+      - { domain: third_party_components, text: "Deploy only via the approved Azure DevOps pipeline with integrity-verified artifacts (SSDF PS.2)." }
+
+  # ------------------------------------------------------------ Repudiation
+  - id: LIB-R-001
+    stride: R
+    applies_to: [process, external_entity]
+    title: Actions performed through {name} cannot be attributed
+    description: Security-relevant actions (create/delete resources, permission changes, data export) are not logged with actor, tenant and correlation ID.
+    mitigations:
+      - { domain: error_handling_logging, text: "Emit audit events (actor, tenant/MSP, action, target, result, correlation ID, UTC time) to centralized tamper-evident logging." }
+      - { domain: error_handling_logging, text: "Retain audit logs per the Logging and Monitoring Policy; restrict deletion." }
+  - id: LIB-R-002
+    stride: R
+    applies_to: [data_store]
+    title: Changes to {name} are not traceable
+    description: Lack of change history or diagnostic logs on the store prevents investigation of data changes.
+    mitigations:
+      - { domain: error_handling_logging, text: "Enable diagnostic settings to Log Analytics; record change history for security-relevant records." }
+
+  # ------------------------------------------------- Information disclosure
+  - id: LIB-I-001
+    stride: I
+    applies_to: [data_flow]
+    when: { encrypted: false }
+    title: Sensitive data on flow {name} disclosed in transit
+    description: Unencrypted transport exposes data to interception.
+    likelihood_delta: 1
+    mitigations:
+      - { domain: cryptography, text: "Enforce TLS 1.2+ end-to-end; disable plaintext listeners; enable HSTS on web endpoints." }
+  - id: LIB-I-002
+    stride: I
+    applies_to: [process, data_store]
+    when: { multi_tenant: true }
+    title: Cross-tenant data exposure in {name}
+    description: Missing or incorrect tenant/MSP scoping lets one customer (or MSP) read another's data — insecure direct object reference across tenants.
+    mitigations:
+      - { domain: tenant_isolation, text: "Derive tenant/MSP scope from the authenticated token, never from request parameters; enforce in a shared data-access layer." }
+      - { domain: tenant_isolation, text: "Add automated cross-tenant authorization tests (tenant A cannot read/act on tenant B) to the CI suite." }
+  - id: LIB-I-003
+    stride: I
+    applies_to: [data_store]
+    when: { classification_in: [confidential, restricted] }
+    title: Data at rest in {name} exposed
+    description: Storage is publicly reachable, uses shared keys/SAS broadly, or is not encrypted with approved algorithms.
+    mitigations:
+      - { domain: cryptography, text: "Encrypt at rest with AES-256 (platform or customer-managed keys per classification)." }
+      - { domain: access_control, text: "Disable public network access; use Private Endpoints; disable shared-key/SAS where possible; use Entra ID auth." }
+  - id: LIB-I-004
+    stride: I
+    applies_to: [process]
+    title: Sensitive data leaked through errors, logs or telemetry of {name}
+    description: Stack traces, tokens, secrets or personal data appear in API errors, Application Insights or logs.
+    mitigations:
+      - { domain: error_handling_logging, text: "Return generic errors to clients; scrub secrets/tokens/PII from logs and telemetry." }
+      - { domain: secrets_management, text: "No secrets in code or config files; reference Key Vault; secrets scanning on every commit." }
+  - id: LIB-I-005
+    stride: I
+    applies_to: [data_store]
+    when: { technology_any: ["key vault"] }
+    title: Secrets in {name} read by over-privileged identities
+    description: Broad Key Vault access policies/RBAC let unrelated services or users read secrets, keys or certificates.
+    mitigations:
+      - { domain: secrets_management, text: "Use Key Vault RBAC with per-secret or per-vault least privilege; separate vaults per environment." }
+      - { domain: secrets_management, text: "Enable soft-delete and purge protection; alert on anomalous secret reads." }
+
+  # ------------------------------------------------------ Denial of service
+  - id: LIB-D-001
+    stride: D
+    applies_to: [process]
+    when: { internet_facing: true }
+    title: "{name} exhausted by request flooding or expensive operations"
+    description: Unthrottled public endpoints allow resource exhaustion or cost-based denial of service.
+    mitigations:
+      - { domain: api_security, text: "Apply per-tenant and per-client rate limiting and request size limits; front with Azure Front Door/WAF." }
+      - { domain: availability_resilience, text: "Set timeouts, bounded queues and autoscale limits with cost alerts." }
+  - id: LIB-D-002
+    stride: D
+    applies_to: [process]
+    when: { multi_tenant: true }
+    title: Noisy-neighbour tenant degrades {name} for others
+    description: One tenant/MSP's workload (bulk operations, large scripted actions) starves shared resources.
+    mitigations:
+      - { domain: availability_resilience, text: "Enforce per-tenant quotas and fair queuing for background jobs." }
+  - id: LIB-D-003
+    stride: D
+    applies_to: [data_store]
+    title: "{name} unavailable or data destroyed"
+    description: Deletion, throttling or regional outage makes the store unavailable.
+    mitigations:
+      - { domain: availability_resilience, text: "Enable soft-delete/backups with tested restore; resource locks on production stores." }
+  - id: LIB-D-004
+    stride: D
+    applies_to: [data_flow]
+    when: { enters_higher_trust: true }
+    title: Oversized or malformed payloads on {name} crash the receiver
+    description: Large, deeply nested or malformed payloads exhaust parser memory/CPU.
+    mitigations:
+      - { domain: input_validation_output_encoding, text: "Enforce payload size, depth and type limits before parsing; include in fuzz testing (ISMS-DEV-003 §8.1.3)." }
+
+  # ------------------------------------------------ Elevation of privilege
+  - id: LIB-E-001
+    stride: E
+    applies_to: [process]
+    title: Broken authorization in {name} allows privilege escalation
+    description: Missing function-level or object-level authorization lets a lower-privileged user perform admin actions.
+    mitigations:
+      - { domain: access_control, text: "Enforce RBAC on every endpoint/action server-side (deny by default); cover with authorization unit tests." }
+  - id: LIB-E-002
+    stride: E
+    applies_to: [process]
+    when: { technology_any: ["managed identity", "service principal", arm, graph, "azure"] }
+    title: Over-privileged Azure/Entra identity used by {name}
+    description: The identity has broader ARM/Graph permissions than required (e.g. Owner at subscription, Directory.ReadWrite.All), amplifying any compromise into customer tenants.
+    mitigations:
+      - { domain: access_control, text: "Scope ARM role assignments to the minimum resource group/resource; use custom roles where built-ins are too broad." }
+      - { domain: access_control, text: "Request least-privilege Graph application permissions; document each permission's justification in the model." }
+  - id: LIB-E-003
+    stride: E
+    applies_to: [process]
+    when: { technology_any: [powershell, "scripted action", runbook, script] }
+    title: Script execution in {name} escalates to host or tenant control
+    description: Scripts run with high privilege (SYSTEM, Owner) letting a script author gain control beyond their role.
+    mitigations:
+      - { domain: access_control, text: "Run scripts with the least privileged identity; separate who may author vs. who may execute at tenant scope." }
+      - { domain: error_handling_logging, text: "Audit-log every execution with author, executor, target tenant and script hash." }
+  - id: LIB-E-004
+    stride: E
+    applies_to: [process]
+    when: { multi_tenant: true }
+    title: MSP/tenant user acts on another tenant via {name}
+    description: Authorization checks the user's role but not the tenant/MSP association, allowing cross-tenant actions.
+    mitigations:
+      - { domain: tenant_isolation, text: "Authorize on (user, role, tenant) for every action; include cross-tenant negative tests." }
+
+  # --------------------------------------------- Generic fallbacks per STRIDE
+  - { id: LIB-S-GEN, stride: S, generic: true, title: "Spoofing of {name}", description: "Identity of {name} or its callers could be falsified.", mitigations: [ { domain: authentication_identity, text: "Authenticate all principals interacting with {name}." } ] }
+  - { id: LIB-T-GEN, stride: T, generic: true, title: "Tampering with {name}", description: "Data or code handled by {name} could be modified without authorization.", mitigations: [ { domain: access_control, text: "Restrict write access and validate integrity for {name}." } ] }
+  - { id: LIB-R-GEN, stride: R, generic: true, title: "Repudiation of actions on {name}", description: "Actions involving {name} may not be attributable.", mitigations: [ { domain: error_handling_logging, text: "Audit-log security-relevant actions on {name}." } ] }
+  - { id: LIB-I-GEN, stride: I, generic: true, title: "Information disclosure from {name}", description: "Data handled by {name} could be exposed to unauthorized parties.", mitigations: [ { domain: data_handling_privacy, text: "Classify data and restrict exposure of {name} to authorized principals." } ] }
+  - { id: LIB-D-GEN, stride: D, generic: true, title: "Denial of service against {name}", description: "{name} could be made unavailable.", mitigations: [ { domain: availability_resilience, text: "Apply limits, timeouts and redundancy for {name}." } ] }
+  - { id: LIB-E-GEN, stride: E, generic: true, title: "Elevation of privilege via {name}", description: "{name} could be used to gain capabilities beyond those granted.", mitigations: [ { domain: access_control, text: "Enforce least privilege and authorization checks in {name}." } ] }

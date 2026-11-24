@@ -1,0 +1,282 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nerdio.net/schemas/threat-model/1.0",
+  "title": "Nerdio Feature Threat Model (ISMS-DEV-004)",
+  "type": "object",
+  "required": ["schema_version", "id", "feature", "status", "tier", "triage"],
+  "additionalProperties": false,
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$" },
+    "date": { "type": "string", "format": "date", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "score": { "type": "integer", "minimum": 1, "maximum": 5 },
+    "classification": { "enum": ["public", "internal", "confidential", "restricted"] },
+    "stride": { "enum": ["S", "T", "R", "I", "D", "E"] },
+    "role": {
+      "enum": [
+        "development_team", "qa_team", "devops_team", "security_team",
+        "head_of_information_security", "vp_technical_solutions",
+        "sr_director_software_engineering", "vp_product_engineering", "cpto"
+      ]
+    },
+    "person": {
+      "type": "object",
+      "required": ["name", "role"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 2 },
+        "email": { "type": "string" },
+        "role": { "$ref": "#/$defs/role" }
+      }
+    },
+    "mitigation": {
+      "type": "object",
+      "required": ["id", "description", "domain", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "description": { "type": "string", "minLength": 5 },
+        "domain": { "type": "string" },
+        "work_item": { "type": "string", "description": "ADO/GitHub work item holding the security acceptance criterion (ISMS-DEV-003 §6.1)" },
+        "status": { "enum": ["proposed", "planned", "implemented", "verified"] },
+        "evidence": { "type": "string", "description": "PR, test, pipeline run or config reference proving implementation" }
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "required": ["requested_by", "approved_by", "approved_on", "review_date", "risk_register_id", "justification"],
+      "additionalProperties": false,
+      "properties": {
+        "requested_by": { "$ref": "#/$defs/person" },
+        "recommended_by": { "$ref": "#/$defs/person" },
+        "approved_by": { "$ref": "#/$defs/person" },
+        "approved_on": { "$ref": "#/$defs/date" },
+        "review_date": { "$ref": "#/$defs/date" },
+        "risk_register_id": { "type": "string", "minLength": 2 },
+        "justification": { "type": "string", "minLength": 10 },
+        "compensating_controls": { "type": "array", "items": { "type": "string" } },
+        "management_review_ratified_on": { "$ref": "#/$defs/date" }
+      }
+    }
+  },
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "id": { "type": "string", "pattern": "^TM-[A-Z0-9-]+$" },
+    "feature": {
+      "type": "object",
+      "required": ["title", "product", "owner", "work_item"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "minLength": 3 },
+        "product": { "enum": ["NME", "NMM", "Platform", "Internal"] },
+        "description": { "type": "string" },
+        "owner": { "$ref": "#/$defs/person" },
+        "work_item": { "type": "string" },
+        "repositories": { "type": "array", "items": { "type": "string" } },
+        "target_release": { "type": "string" }
+      }
+    },
+    "status": { "enum": ["draft", "in_review", "approved", "verified", "retired"] },
+    "tier": { "enum": [0, 1, 2] },
+    "last_updated": { "$ref": "#/$defs/date" },
+    "triage": {
+      "type": "object",
+      "additionalProperties": { "type": "boolean" }
+    },
+    "data_classification": { "$ref": "#/$defs/classification" },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "classification"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "name": { "type": "string" },
+          "classification": { "$ref": "#/$defs/classification" },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "trust_zones": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "trust"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "name": { "type": "string" },
+          "trust": { "type": "integer", "minimum": 0, "maximum": 10, "description": "0 = untrusted internet, 10 = most trusted" },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "elements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "type", "zone"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "name": { "type": "string" },
+          "type": { "enum": ["process", "data_store", "external_entity"] },
+          "zone": { "$ref": "#/$defs/id" },
+          "technology": { "type": "string" },
+          "classification": { "$ref": "#/$defs/classification" },
+          "multi_tenant": { "type": "boolean" },
+          "internet_facing": { "type": "boolean" },
+          "holds_assets": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "data_flows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "from", "to", "protocol"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "from": { "$ref": "#/$defs/id" },
+          "to": { "$ref": "#/$defs/id" },
+          "protocol": { "type": "string" },
+          "assets": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+          "authenticated": { "type": "boolean" },
+          "encrypted": { "type": "boolean" },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "entry_points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "element", "description", "authentication"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "element": { "$ref": "#/$defs/id" },
+          "description": { "type": "string" },
+          "authentication": { "type": "string" },
+          "internet_facing": { "type": "boolean" }
+        }
+      }
+    },
+    "threats": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "stride", "target", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "title": { "type": "string" },
+          "stride": { "$ref": "#/$defs/stride" },
+          "target": { "$ref": "#/$defs/id", "description": "element or data flow id" },
+          "description": { "type": "string" },
+          "source": { "enum": ["generated", "manual", "pentest", "incident", "rca"] },
+          "library_ref": { "type": "string" },
+          "likelihood": { "$ref": "#/$defs/score" },
+          "impact": { "$ref": "#/$defs/score" },
+          "status": { "enum": ["identified", "mitigation_planned", "mitigated", "accepted", "transferred", "rejected"] },
+          "rejection_reason": { "type": "string" },
+          "mitigations": { "type": "array", "items": { "$ref": "#/$defs/mitigation" } },
+          "residual": {
+            "type": "object",
+            "required": ["likelihood", "impact"],
+            "additionalProperties": false,
+            "properties": {
+              "likelihood": { "$ref": "#/$defs/score" },
+              "impact": { "$ref": "#/$defs/score" }
+            }
+          },
+          "acceptance": { "$ref": "#/$defs/acceptance" }
+        }
+      }
+    },
+    "not_applicable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["target", "stride", "justification"],
+        "additionalProperties": false,
+        "properties": {
+          "target": { "$ref": "#/$defs/id" },
+          "stride": { "$ref": "#/$defs/stride" },
+          "justification": { "type": "string", "minLength": 15 }
+        }
+      }
+    },
+    "architectural_review": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["decision"],
+        "additionalProperties": false,
+        "properties": {
+          "decision": { "type": "string", "minLength": 10 },
+          "reviewed_by": { "$ref": "#/$defs/person" },
+          "date": { "$ref": "#/$defs/date" }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["ai_assisted", "generated_on"],
+      "additionalProperties": false,
+      "properties": {
+        "ai_assisted": { "type": "boolean" },
+        "tool": { "type": "string" },
+        "model": { "type": "string" },
+        "generated_on": { "$ref": "#/$defs/date" },
+        "inputs": { "type": "array", "items": { "type": "string" } },
+        "extraction_sha256": { "type": "string" }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "description": "Human sign-off that the (AI-drafted) model and SIA were reviewed and corrected (ISMS-DEV-004 §4.12)",
+      "required": ["validated_by", "date", "scope"],
+      "additionalProperties": false,
+      "properties": {
+        "validated_by": { "$ref": "#/$defs/person" },
+        "date": { "$ref": "#/$defs/date" },
+        "scope": { "type": "array", "minItems": 1, "items": { "enum": ["extraction", "threats", "scores", "sia"] } },
+        "sia_rating": { "enum": ["low", "medium", "high", "critical"] },
+        "sia_rating_confirmed_by": { "$ref": "#/$defs/person" },
+        "changes_made": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "string" }
+      }
+    },
+    "approvals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["stage", "approver", "date"],
+        "additionalProperties": false,
+        "properties": {
+          "stage": { "enum": ["design", "release"] },
+          "approver": { "$ref": "#/$defs/person" },
+          "date": { "$ref": "#/$defs/date" },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["verified_by", "date", "attack_surface_delta_reviewed"],
+      "additionalProperties": false,
+      "properties": {
+        "verified_by": { "$ref": "#/$defs/person" },
+        "date": { "$ref": "#/$defs/date" },
+        "attack_surface_delta_reviewed": { "type": "boolean" },
+        "new_attack_surface": { "type": "array", "items": { "type": "string" } },
+        "release": { "type": "string" },
+        "notes": { "type": "string" }
+      }
+    },
+    "references": { "type": "array", "items": { "type": "string" } }
+  }
+}

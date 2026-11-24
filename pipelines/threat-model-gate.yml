@@ -1,0 +1,61 @@
+# Azure DevOps step template — ISMS-DEV-004 release gate (ISMS-DEV-003 §8.1.4, §9.2)
+#
+# In the product pipeline:
+#   resources:
+#     repositories:
+#       - repository: threatmod
+#         type: github
+#         name: oabuchi/threat-mod
+#         endpoint: <github-service-connection>
+#   stages:
+#     - stage: SecurityGates
+#       jobs:
+#         - job: ThreatModel
+#           steps:
+#             - checkout: self
+#             - checkout: threatmod
+#             - template: pipelines/threat-model-gate.yml@threatmod
+#               parameters: { stage: release, modelsDir: $(Build.Repository.Name)/threat-models }
+parameters:
+  - name: stage
+    type: string
+    default: release
+    values: [design, release]
+  - name: modelsDir
+    type: string
+    default: threat-models
+  - name: threatmodDir
+    type: string
+    default: threat-mod
+
+steps:
+  - task: UsePythonVersion@0
+    inputs: { versionSpec: "3.12" }
+
+  - script: pip install -r ${{ parameters.threatmodDir }}/requirements.txt
+    displayName: Install threatmod
+
+  - script: |
+      set -e
+      export PYTHONPATH=$(Build.SourcesDirectory)/${{ parameters.threatmodDir }}
+      python -m threatmod validate "${{ parameters.modelsDir }}" --stage ${{ parameters.stage }}
+    workingDirectory: $(Build.SourcesDirectory)
+    displayName: Threat model ${{ parameters.stage }} gate (ISMS-DEV-004)
+
+  - script: |
+      export PYTHONPATH=$(Build.SourcesDirectory)/${{ parameters.threatmodDir }}
+      mkdir -p $(Build.ArtifactStagingDirectory)/threat-models
+      for f in $(find "${{ parameters.modelsDir }}" -name threat-model.yaml); do
+        id=$(basename "$(dirname "$f")")
+        python -m threatmod report "$f" --stage ${{ parameters.stage }} --out "$(Build.ArtifactStagingDirectory)/threat-models/$id.md"
+        cp "$f" "$(Build.ArtifactStagingDirectory)/threat-models/$id.yaml"
+      done
+    workingDirectory: $(Build.SourcesDirectory)
+    condition: always()
+    displayName: Render threat landscape evidence
+
+  - task: PublishPipelineArtifact@1
+    condition: always()
+    inputs:
+      targetPath: $(Build.ArtifactStagingDirectory)/threat-models
+      artifact: threat-model-evidence

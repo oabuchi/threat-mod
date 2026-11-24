@@ -1,0 +1,1169 @@
+schema_version: '1.0'
+id: TM-NME-52310
+feature:
+  title: Self-service session host restart from Microsoft Teams
+  product: NME
+  description: AVD end users send /restart-my-desktop to the Nerdio Teams bot. Azure Bot Service forwards the activity
+    to a new NME endpoint, which resolves the user's assigned personal session host from the NME database and restarts
+    it through ARM using the NME managed identity, then confirms in Teams. Admins enable the feature per host pool
+    and every restart is audit-logged.
+  owner:
+    name: Priya Example
+    role: development_team
+  work_item: https://dev.azure.com/nerdio/NME/_workitems/edit/52310
+status: draft
+tier: 2
+last_updated: '2026-11-05'
+data_classification: confidential
+triage:
+  architectural_change: true
+  data_handling_change: true
+  new_integration: true
+  authn_authz_change: true
+  new_external_entry_point: true
+  privileged_azure_operation: true
+  cross_tenant_data: false
+  restricted_data: false
+  cryptography_change: false
+assets:
+- id: A1
+  name: Teams activity payload (display name, Entra object id, tenant id, message text)
+  classification: confidential
+  description: Personal data of the end user received from Bot Service
+- id: A2
+  name: Host assignment mapping (user id -> VM resource id)
+  classification: confidential
+  description: Existing HostAssignments table
+- id: A3
+  name: Customer session host VMs
+  classification: restricted
+  description: Customer compute that can be restarted via ARM
+- id: A4
+  name: NME audit log
+  classification: confidential
+  description: Who restarted what, when, result
+- id: A5
+  name: Bot app credentials / Bot Framework token
+  classification: restricted
+  description: Used to validate inbound JWT and send confirmation cards
+trust_zones:
+- id: Z0
+  name: Internet / Microsoft 365
+  trust: 0
+  description: Teams clients and Azure Bot Service
+- id: Z1
+  name: NME App Service (customer Azure subscription)
+  trust: 7
+  description: NME application tier
+- id: Z2
+  name: Customer Azure resources
+  trust: 6
+  description: ARM control plane and Log Analytics in the customer subscription
+elements:
+- id: E1
+  name: AVD end user (Teams client)
+  type: external_entity
+  zone: Z0
+  technology: Microsoft Teams
+  internet_facing: true
+  description: Issues /restart-my-desktop
+- id: E2
+  name: Azure Bot Service
+  type: external_entity
+  zone: Z0
+  technology: Bot Framework
+  internet_facing: true
+  holds_assets:
+  - A1
+  description: Relays activities and confirmation cards
+- id: P1
+  name: Teams activity endpoint
+  type: process
+  zone: Z1
+  technology: App Service webhook endpoint, Bot Framework JWT validation
+  internet_facing: true
+  holds_assets:
+  - A1
+  - A5
+  description: POST /api/teams/activity
+- id: P2
+  name: Restart worker
+  type: process
+  zone: Z1
+  technology: App Service worker, managed identity (ARM, Virtual Machine Contributor)
+  holds_assets:
+  - A2
+  description: Resolves assigned host and restarts it
+- id: D1
+  name: NME SQL database
+  type: data_store
+  zone: Z1
+  technology: Azure SQL
+  holds_assets:
+  - A2
+  description: HostAssignments table
+- id: E3
+  name: Azure Resource Manager
+  type: external_entity
+  zone: Z2
+  technology: ARM REST API
+  holds_assets:
+  - A3
+  description: VM restart API
+- id: D2
+  name: Log Analytics (NME audit log)
+  type: data_store
+  zone: Z2
+  technology: Azure Log Analytics
+  holds_assets:
+  - A4
+  description: Audit events
+data_flows:
+- id: F1
+  from: E1
+  to: E2
+  protocol: HTTPS (Teams)
+  assets:
+  - A1
+  authenticated: true
+  encrypted: true
+  description: 1. /restart-my-desktop
+- id: F2
+  from: E2
+  to: P1
+  protocol: HTTPS webhook (Bot Framework JWT)
+  assets:
+  - A1
+  authenticated: true
+  encrypted: true
+  description: 2. activity + JWT
+- id: F3
+  from: P1
+  to: P2
+  protocol: In-process job queue
+  assets:
+  - A1
+  authenticated: true
+  encrypted: true
+  description: 3. enqueue job
+- id: F4
+  from: P2
+  to: D1
+  protocol: TDS/TLS
+  assets:
+  - A2
+  authenticated: true
+  encrypted: true
+  description: 4. lookup host
+- id: F5
+  from: P2
+  to: E3
+  protocol: HTTPS (ARM REST)
+  assets:
+  - A3
+  authenticated: true
+  encrypted: true
+  description: 5. restart VM
+- id: F6
+  from: P2
+  to: D2
+  protocol: HTTPS (Log Analytics ingestion)
+  assets:
+  - A4
+  authenticated: true
+  encrypted: true
+  description: 6. audit event
+- id: F7
+  from: P2
+  to: E2
+  protocol: HTTPS (Bot Framework REST API)
+  assets:
+  - A1
+  authenticated: true
+  encrypted: true
+  description: 7. confirmation card
+entry_points:
+- id: EP1
+  element: P1
+  description: POST /api/teams/activity
+  authentication: Bot Framework JWT (issuer + audience = bot app id)
+  internet_facing: true
+threats:
+- id: T-P2-FEAT-001
+  title: User restarts a host that is not their own (assignment confusion)
+  stride: E
+  target: P2
+  description: If the Teams user is resolved by display name or e-mail instead of the Entra object id, or if HostAssignments
+    is stale, the worker may restart another user's personal host or a pooled host. Requirements state pooled hosts
+    must never be restarted.
+  source: manual
+  likelihood: 3
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-P2-FEAT-001-1
+    description: Resolve the user strictly by Entra object id and tenant id from the validated JWT; restart only
+      hosts whose assignment type is personal and whose assigned user id matches; cover with negative tests.
+    domain: access_control
+    status: proposed
+- id: T-P1-FEAT-002
+  title: Restart spam against a user's host (self-inflicted or via compromised Teams account)
+  stride: D
+  target: P1
+  description: Repeated /restart-my-desktop commands could keep a host in a restart loop or exhaust ARM throttling
+    limits for the host pool.
+  source: manual
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-P1-FEAT-002-1
+    description: Enforce the one-restart-per-user-per-10-minutes limit server-side (not in the bot), and a per-host-pool
+      concurrency cap; require the confirmation card when the admin setting is on.
+    domain: availability_resilience
+    status: proposed
+- id: T-P2-FEAT-003
+  title: Feature enabled on a host pool without admin intent
+  stride: E
+  target: P2
+  description: The per-host-pool enable flag is the only control that stops any Teams user in the tenant from restarting
+    hosts. If the flag defaults to on, or can be set by a non-admin role, the feature exposes restart to everyone.
+  source: manual
+  likelihood: 2
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-P2-FEAT-003-1
+    description: Default the flag to off per host pool (secure default); restrict changing it to the NME admin role;
+      log changes to the flag.
+    domain: secure_defaults
+    status: proposed
+- id: T-P1-FEAT-004
+  title: Spoofed bot activity from a different bot or tenant
+  stride: S
+  target: P1
+  description: A JWT issued by Bot Framework for another bot (wrong audience) or a different Entra tenant (if the
+    bot is multi-tenant) is accepted, letting an attacker in another tenant trigger restarts.
+  source: manual
+  likelihood: 3
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-P1-FEAT-004-1
+    description: Validate issuer, audience (this bot's app id), expiry and signing key via Bot Framework OpenID
+      metadata; reject activities whose tenant id is not the NME customer tenant.
+    domain: authentication_identity
+    status: proposed
+- id: T-E1-S-004
+  title: Third-party system AVD end user (Teams client) is impersonated or compromised
+  stride: S
+  target: E1
+  description: A compromised or spoofed third party (PSA/RMM, IdP, partner API) sends malicious data to Nerdio.
+  source: generated
+  library_ref: LIB-S-004
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-E1-S-004-1
+    description: Pin endpoints to vendor-documented hosts over TLS 1.2+; validate certificates.
+    domain: api_security
+    status: proposed
+  - id: M-E1-S-004-2
+    description: Treat all third-party responses as untrusted input; schema-validate before use.
+    domain: input_validation_output_encoding
+    status: proposed
+- id: T-E1-R-001
+  title: Actions performed through AVD end user (Teams client) cannot be attributed
+  stride: R
+  target: E1
+  description: Security-relevant actions (create/delete resources, permission changes, data export) are not logged
+    with actor, tenant and correlation ID.
+  source: generated
+  library_ref: LIB-R-001
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-E1-R-001-1
+    description: Emit audit events (actor, tenant/MSP, action, target, result, correlation ID, UTC time) to centralized
+      tamper-evident logging.
+    domain: error_handling_logging
+    status: proposed
+  - id: M-E1-R-001-2
+    description: Retain audit logs per the Logging and Monitoring Policy; restrict deletion.
+    domain: error_handling_logging
+    status: proposed
+- id: T-E2-S-004
+  title: Third-party system Azure Bot Service is impersonated or compromised
+  stride: S
+  target: E2
+  description: A compromised or spoofed third party (PSA/RMM, IdP, partner API) sends malicious data to Nerdio.
+  source: generated
+  library_ref: LIB-S-004
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-E2-S-004-1
+    description: Pin endpoints to vendor-documented hosts over TLS 1.2+; validate certificates.
+    domain: api_security
+    status: proposed
+  - id: M-E2-S-004-2
+    description: Treat all third-party responses as untrusted input; schema-validate before use.
+    domain: input_validation_output_encoding
+    status: proposed
+- id: T-E2-R-001
+  title: Actions performed through Azure Bot Service cannot be attributed
+  stride: R
+  target: E2
+  description: Security-relevant actions (create/delete resources, permission changes, data export) are not logged
+    with actor, tenant and correlation ID.
+  source: generated
+  library_ref: LIB-R-001
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-E2-R-001-1
+    description: Emit audit events (actor, tenant/MSP, action, target, result, correlation ID, UTC time) to centralized
+      tamper-evident logging.
+    domain: error_handling_logging
+    status: proposed
+  - id: M-E2-R-001-2
+    description: Retain audit logs per the Logging and Monitoring Policy; restrict deletion.
+    domain: error_handling_logging
+    status: proposed
+- id: T-P1-S-001
+  title: Attacker impersonates a legitimate caller of Teams activity endpoint
+  stride: S
+  target: P1
+  description: An unauthenticated or weakly authenticated party presents stolen or forged credentials/tokens to
+    Teams activity endpoint.
+  source: generated
+  library_ref: LIB-S-001
+  likelihood: 4
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-P1-S-001-1
+    description: Require Entra ID (OIDC/OAuth 2.0) authentication with MFA enforced via Conditional Access for interactive
+      users.
+    domain: authentication_identity
+    status: proposed
+  - id: M-P1-S-001-2
+    description: Validate token issuer, audience, signature, expiry and tenant (tid) claim on every request.
+    domain: authentication_identity
+    status: proposed
+- id: T-P1-S-002
+  title: Forged inbound event/webhook accepted by Teams activity endpoint
+  stride: S
+  target: P1
+  description: An attacker sends crafted events to Teams activity endpoint that appear to come from a trusted publisher.
+  source: generated
+  library_ref: LIB-S-002
+  likelihood: 4
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-P1-S-002-1
+    description: Verify HMAC/signature or validation handshake on every inbound event; reject unsigned payloads.
+    domain: api_security
+    status: proposed
+  - id: M-P1-S-002-2
+    description: Enforce timestamp/nonce replay window (≤5 min) on inbound events.
+    domain: api_security
+    status: proposed
+- id: T-P1-S-003
+  title: Service-to-service identity of Teams activity endpoint spoofed or credentials stolen
+  stride: S
+  target: P1
+  description: Shared secrets or client secrets used by Teams activity endpoint are leaked and reused to impersonate
+    the service.
+  source: generated
+  library_ref: LIB-S-003
+  likelihood: 4
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-P1-S-003-1
+    description: Use Azure Managed Identity / workload identity federation instead of client secrets.
+    domain: secrets_management
+    status: proposed
+  - id: M-P1-S-003-2
+    description: Where secrets are unavoidable, store in Key Vault with rotation ≤90 days and secrets scanning on
+      every commit.
+    domain: secrets_management
+    status: proposed
+- id: T-P1-T-005
+  title: Build or deployment artifact of Teams activity endpoint tampered with
+  stride: T
+  target: P1
+  description: A compromised dependency, pipeline or artifact injects malicious code into Teams activity endpoint.
+  source: generated
+  library_ref: LIB-T-005
+  likelihood: 4
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-P1-T-005-1
+    description: Only use dependencies from the Approved Tools/Library List; SCA (Aikido) must pass.
+    domain: third_party_components
+    status: proposed
+  - id: M-P1-T-005-2
+    description: Deploy only via the approved Azure DevOps pipeline with integrity-verified artifacts (SSDF PS.2).
+    domain: third_party_components
+    status: proposed
+- id: T-P1-R-001
+  title: Actions performed through Teams activity endpoint cannot be attributed
+  stride: R
+  target: P1
+  description: Security-relevant actions (create/delete resources, permission changes, data export) are not logged
+    with actor, tenant and correlation ID.
+  source: generated
+  library_ref: LIB-R-001
+  likelihood: 4
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-P1-R-001-1
+    description: Emit audit events (actor, tenant/MSP, action, target, result, correlation ID, UTC time) to centralized
+      tamper-evident logging.
+    domain: error_handling_logging
+    status: proposed
+  - id: M-P1-R-001-2
+    description: Retain audit logs per the Logging and Monitoring Policy; restrict deletion.
+    domain: error_handling_logging
+    status: proposed
+- id: T-P1-I-004
+  title: Sensitive data leaked through errors, logs or telemetry of Teams activity endpoint
+  stride: I
+  target: P1
+  description: Stack traces, tokens, secrets or personal data appear in API errors, Application Insights or logs.
+  source: generated
+  library_ref: LIB-I-004
+  likelihood: 4
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-P1-I-004-1
+    description: Return generic errors to clients; scrub secrets/tokens/PII from logs and telemetry.
+    domain: error_handling_logging
+    status: proposed
+  - id: M-P1-I-004-2
+    description: No secrets in code or config files; reference Key Vault; secrets scanning on every commit.
+    domain: secrets_management
+    status: proposed
+- id: T-P1-D-001
+  title: Teams activity endpoint exhausted by request flooding or expensive operations
+  stride: D
+  target: P1
+  description: Unthrottled public endpoints allow resource exhaustion or cost-based denial of service.
+  source: generated
+  library_ref: LIB-D-001
+  likelihood: 4
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-P1-D-001-1
+    description: Apply per-tenant and per-client rate limiting and request size limits; front with Azure Front Door/WAF.
+    domain: api_security
+    status: proposed
+  - id: M-P1-D-001-2
+    description: Set timeouts, bounded queues and autoscale limits with cost alerts.
+    domain: availability_resilience
+    status: proposed
+- id: T-P1-E-001
+  title: Broken authorization in Teams activity endpoint allows privilege escalation
+  stride: E
+  target: P1
+  description: Missing function-level or object-level authorization lets a lower-privileged user perform admin actions.
+  source: generated
+  library_ref: LIB-E-001
+  likelihood: 4
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-P1-E-001-1
+    description: Enforce RBAC on every endpoint/action server-side (deny by default); cover with authorization unit
+      tests.
+    domain: access_control
+    status: proposed
+- id: T-P2-S-003
+  title: Service-to-service identity of Restart worker spoofed or credentials stolen
+  stride: S
+  target: P2
+  description: Shared secrets or client secrets used by Restart worker are leaked and reused to impersonate the
+    service.
+  source: generated
+  library_ref: LIB-S-003
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-P2-S-003-1
+    description: Use Azure Managed Identity / workload identity federation instead of client secrets.
+    domain: secrets_management
+    status: proposed
+  - id: M-P2-S-003-2
+    description: Where secrets are unavoidable, store in Key Vault with rotation ≤90 days and secrets scanning on
+      every commit.
+    domain: secrets_management
+    status: proposed
+- id: T-P2-T-005
+  title: Build or deployment artifact of Restart worker tampered with
+  stride: T
+  target: P2
+  description: A compromised dependency, pipeline or artifact injects malicious code into Restart worker.
+  source: generated
+  library_ref: LIB-T-005
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-P2-T-005-1
+    description: Only use dependencies from the Approved Tools/Library List; SCA (Aikido) must pass.
+    domain: third_party_components
+    status: proposed
+  - id: M-P2-T-005-2
+    description: Deploy only via the approved Azure DevOps pipeline with integrity-verified artifacts (SSDF PS.2).
+    domain: third_party_components
+    status: proposed
+- id: T-P2-R-001
+  title: Actions performed through Restart worker cannot be attributed
+  stride: R
+  target: P2
+  description: Security-relevant actions (create/delete resources, permission changes, data export) are not logged
+    with actor, tenant and correlation ID.
+  source: generated
+  library_ref: LIB-R-001
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-P2-R-001-1
+    description: Emit audit events (actor, tenant/MSP, action, target, result, correlation ID, UTC time) to centralized
+      tamper-evident logging.
+    domain: error_handling_logging
+    status: proposed
+  - id: M-P2-R-001-2
+    description: Retain audit logs per the Logging and Monitoring Policy; restrict deletion.
+    domain: error_handling_logging
+    status: proposed
+- id: T-P2-I-004
+  title: Sensitive data leaked through errors, logs or telemetry of Restart worker
+  stride: I
+  target: P2
+  description: Stack traces, tokens, secrets or personal data appear in API errors, Application Insights or logs.
+  source: generated
+  library_ref: LIB-I-004
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-P2-I-004-1
+    description: Return generic errors to clients; scrub secrets/tokens/PII from logs and telemetry.
+    domain: error_handling_logging
+    status: proposed
+  - id: M-P2-I-004-2
+    description: No secrets in code or config files; reference Key Vault; secrets scanning on every commit.
+    domain: secrets_management
+    status: proposed
+- id: T-P2-D-GEN
+  title: Denial of service against Restart worker
+  stride: D
+  target: P2
+  description: Restart worker could be made unavailable.
+  source: generated
+  library_ref: LIB-D-GEN
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-P2-D-GEN-1
+    description: Apply limits, timeouts and redundancy for Restart worker.
+    domain: availability_resilience
+    status: proposed
+- id: T-P2-E-001
+  title: Broken authorization in Restart worker allows privilege escalation
+  stride: E
+  target: P2
+  description: Missing function-level or object-level authorization lets a lower-privileged user perform admin actions.
+  source: generated
+  library_ref: LIB-E-001
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-P2-E-001-1
+    description: Enforce RBAC on every endpoint/action server-side (deny by default); cover with authorization unit
+      tests.
+    domain: access_control
+    status: proposed
+- id: T-P2-E-002
+  title: Over-privileged Azure/Entra identity used by Restart worker
+  stride: E
+  target: P2
+  description: The identity has broader ARM/Graph permissions than required (e.g. Owner at subscription, Directory.ReadWrite.All),
+    amplifying any compromise into customer tenants.
+  source: generated
+  library_ref: LIB-E-002
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-P2-E-002-1
+    description: Scope ARM role assignments to the minimum resource group/resource; use custom roles where built-ins
+      are too broad.
+    domain: access_control
+    status: proposed
+  - id: M-P2-E-002-2
+    description: Request least-privilege Graph application permissions; document each permission's justification
+      in the model.
+    domain: access_control
+    status: proposed
+- id: T-D1-T-004
+  title: Unauthorized modification of data in NME SQL database
+  stride: T
+  target: D1
+  description: Data in the store is altered by a principal with excessive write permissions or via an injection
+    flaw upstream.
+  source: generated
+  library_ref: LIB-T-004
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-D1-T-004-1
+    description: Grant least-privilege data-plane roles; separate read and write identities.
+    domain: access_control
+    status: proposed
+  - id: M-D1-T-004-2
+    description: Enable resource diagnostic/audit logging for write and delete operations.
+    domain: error_handling_logging
+    status: proposed
+- id: T-D1-R-002
+  title: Changes to NME SQL database are not traceable
+  stride: R
+  target: D1
+  description: Lack of change history or diagnostic logs on the store prevents investigation of data changes.
+  source: generated
+  library_ref: LIB-R-002
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-D1-R-002-1
+    description: Enable diagnostic settings to Log Analytics; record change history for security-relevant records.
+    domain: error_handling_logging
+    status: proposed
+- id: T-D1-I-003
+  title: Data at rest in NME SQL database exposed
+  stride: I
+  target: D1
+  description: Storage is publicly reachable, uses shared keys/SAS broadly, or is not encrypted with approved algorithms.
+  source: generated
+  library_ref: LIB-I-003
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-D1-I-003-1
+    description: Encrypt at rest with AES-256 (platform or customer-managed keys per classification).
+    domain: cryptography
+    status: proposed
+  - id: M-D1-I-003-2
+    description: Disable public network access; use Private Endpoints; disable shared-key/SAS where possible; use
+      Entra ID auth.
+    domain: access_control
+    status: proposed
+- id: T-D1-D-003
+  title: NME SQL database unavailable or data destroyed
+  stride: D
+  target: D1
+  description: Deletion, throttling or regional outage makes the store unavailable.
+  source: generated
+  library_ref: LIB-D-003
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-D1-D-003-1
+    description: Enable soft-delete/backups with tested restore; resource locks on production stores.
+    domain: availability_resilience
+    status: proposed
+- id: T-E3-S-004
+  title: Third-party system Azure Resource Manager is impersonated or compromised
+  stride: S
+  target: E3
+  description: A compromised or spoofed third party (PSA/RMM, IdP, partner API) sends malicious data to Nerdio.
+  source: generated
+  library_ref: LIB-S-004
+  likelihood: 3
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-E3-S-004-1
+    description: Pin endpoints to vendor-documented hosts over TLS 1.2+; validate certificates.
+    domain: api_security
+    status: proposed
+  - id: M-E3-S-004-2
+    description: Treat all third-party responses as untrusted input; schema-validate before use.
+    domain: input_validation_output_encoding
+    status: proposed
+- id: T-E3-R-001
+  title: Actions performed through Azure Resource Manager cannot be attributed
+  stride: R
+  target: E3
+  description: Security-relevant actions (create/delete resources, permission changes, data export) are not logged
+    with actor, tenant and correlation ID.
+  source: generated
+  library_ref: LIB-R-001
+  likelihood: 3
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-E3-R-001-1
+    description: Emit audit events (actor, tenant/MSP, action, target, result, correlation ID, UTC time) to centralized
+      tamper-evident logging.
+    domain: error_handling_logging
+    status: proposed
+  - id: M-E3-R-001-2
+    description: Retain audit logs per the Logging and Monitoring Policy; restrict deletion.
+    domain: error_handling_logging
+    status: proposed
+- id: T-D2-T-004
+  title: Unauthorized modification of data in Log Analytics (NME audit log)
+  stride: T
+  target: D2
+  description: Data in the store is altered by a principal with excessive write permissions or via an injection
+    flaw upstream.
+  source: generated
+  library_ref: LIB-T-004
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-D2-T-004-1
+    description: Grant least-privilege data-plane roles; separate read and write identities.
+    domain: access_control
+    status: proposed
+  - id: M-D2-T-004-2
+    description: Enable resource diagnostic/audit logging for write and delete operations.
+    domain: error_handling_logging
+    status: proposed
+- id: T-D2-R-002
+  title: Changes to Log Analytics (NME audit log) are not traceable
+  stride: R
+  target: D2
+  description: Lack of change history or diagnostic logs on the store prevents investigation of data changes.
+  source: generated
+  library_ref: LIB-R-002
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-D2-R-002-1
+    description: Enable diagnostic settings to Log Analytics; record change history for security-relevant records.
+    domain: error_handling_logging
+    status: proposed
+- id: T-D2-I-003
+  title: Data at rest in Log Analytics (NME audit log) exposed
+  stride: I
+  target: D2
+  description: Storage is publicly reachable, uses shared keys/SAS broadly, or is not encrypted with approved algorithms.
+  source: generated
+  library_ref: LIB-I-003
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-D2-I-003-1
+    description: Encrypt at rest with AES-256 (platform or customer-managed keys per classification).
+    domain: cryptography
+    status: proposed
+  - id: M-D2-I-003-2
+    description: Disable public network access; use Private Endpoints; disable shared-key/SAS where possible; use
+      Entra ID auth.
+    domain: access_control
+    status: proposed
+- id: T-D2-D-003
+  title: Log Analytics (NME audit log) unavailable or data destroyed
+  stride: D
+  target: D2
+  description: Deletion, throttling or regional outage makes the store unavailable.
+  source: generated
+  library_ref: LIB-D-003
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-D2-D-003-1
+    description: Enable soft-delete/backups with tested restore; resource locks on production stores.
+    domain: availability_resilience
+    status: proposed
+- id: T-F1-T-GEN
+  title: Tampering with AVD end user (Teams client) → Azure Bot Service (HTTPS (Teams))
+  stride: T
+  target: F1
+  description: Data or code handled by AVD end user (Teams client) → Azure Bot Service (HTTPS (Teams)) could be
+    modified without authorization.
+  source: generated
+  library_ref: LIB-T-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F1-T-GEN-1
+    description: Restrict write access and validate integrity for AVD end user (Teams client) → Azure Bot Service
+      (HTTPS (Teams)).
+    domain: access_control
+    status: proposed
+- id: T-F1-I-GEN
+  title: Information disclosure from AVD end user (Teams client) → Azure Bot Service (HTTPS (Teams))
+  stride: I
+  target: F1
+  description: Data handled by AVD end user (Teams client) → Azure Bot Service (HTTPS (Teams)) could be exposed
+    to unauthorized parties.
+  source: generated
+  library_ref: LIB-I-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F1-I-GEN-1
+    description: Classify data and restrict exposure of AVD end user (Teams client) → Azure Bot Service (HTTPS (Teams))
+      to authorized principals.
+    domain: data_handling_privacy
+    status: proposed
+- id: T-F1-D-GEN
+  title: Denial of service against AVD end user (Teams client) → Azure Bot Service (HTTPS (Teams))
+  stride: D
+  target: F1
+  description: AVD end user (Teams client) → Azure Bot Service (HTTPS (Teams)) could be made unavailable.
+  source: generated
+  library_ref: LIB-D-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F1-D-GEN-1
+    description: Apply limits, timeouts and redundancy for AVD end user (Teams client) → Azure Bot Service (HTTPS
+      (Teams)).
+    domain: availability_resilience
+    status: proposed
+- id: T-F2-T-002
+  title: Malicious input injected across trust boundary via Azure Bot Service → Teams activity endpoint (HTTPS webhook
+    (Bot Framework JWT))
+  stride: T
+  target: F2
+  description: Data crossing into a higher-trust zone is used in queries, commands, templates or deserialization
+    without validation (SQLi, XSS, XXE, command injection).
+  source: generated
+  library_ref: LIB-T-002
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F2-T-002-1
+    description: Allow-list validate and schema-validate input at the boundary; use parameterized queries; encode
+      output.
+    domain: input_validation_output_encoding
+    status: proposed
+  - id: M-F2-T-002-2
+    description: Disable unsafe deserialization (e.g. TypeNameHandling.None); disable DTD processing for XML.
+    domain: input_validation_output_encoding
+    status: proposed
+- id: T-F2-I-GEN
+  title: Information disclosure from Azure Bot Service → Teams activity endpoint (HTTPS webhook (Bot Framework JWT))
+  stride: I
+  target: F2
+  description: Data handled by Azure Bot Service → Teams activity endpoint (HTTPS webhook (Bot Framework JWT)) could
+    be exposed to unauthorized parties.
+  source: generated
+  library_ref: LIB-I-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F2-I-GEN-1
+    description: Classify data and restrict exposure of Azure Bot Service → Teams activity endpoint (HTTPS webhook
+      (Bot Framework JWT)) to authorized principals.
+    domain: data_handling_privacy
+    status: proposed
+- id: T-F2-D-004
+  title: Oversized or malformed payloads on Azure Bot Service → Teams activity endpoint (HTTPS webhook (Bot Framework
+    JWT)) crash the receiver
+  stride: D
+  target: F2
+  description: Large, deeply nested or malformed payloads exhaust parser memory/CPU.
+  source: generated
+  library_ref: LIB-D-004
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F2-D-004-1
+    description: Enforce payload size, depth and type limits before parsing; include in fuzz testing (ISMS-DEV-003
+      §8.1.3).
+    domain: input_validation_output_encoding
+    status: proposed
+- id: T-F3-T-GEN
+  title: Tampering with Teams activity endpoint → Restart worker (In-process job queue)
+  stride: T
+  target: F3
+  description: Data or code handled by Teams activity endpoint → Restart worker (In-process job queue) could be
+    modified without authorization.
+  source: generated
+  library_ref: LIB-T-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F3-T-GEN-1
+    description: Restrict write access and validate integrity for Teams activity endpoint → Restart worker (In-process
+      job queue).
+    domain: access_control
+    status: proposed
+- id: T-F3-I-GEN
+  title: Information disclosure from Teams activity endpoint → Restart worker (In-process job queue)
+  stride: I
+  target: F3
+  description: Data handled by Teams activity endpoint → Restart worker (In-process job queue) could be exposed
+    to unauthorized parties.
+  source: generated
+  library_ref: LIB-I-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F3-I-GEN-1
+    description: Classify data and restrict exposure of Teams activity endpoint → Restart worker (In-process job
+      queue) to authorized principals.
+    domain: data_handling_privacy
+    status: proposed
+- id: T-F3-D-GEN
+  title: Denial of service against Teams activity endpoint → Restart worker (In-process job queue)
+  stride: D
+  target: F3
+  description: Teams activity endpoint → Restart worker (In-process job queue) could be made unavailable.
+  source: generated
+  library_ref: LIB-D-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F3-D-GEN-1
+    description: Apply limits, timeouts and redundancy for Teams activity endpoint → Restart worker (In-process
+      job queue).
+    domain: availability_resilience
+    status: proposed
+- id: T-F4-T-GEN
+  title: Tampering with Restart worker → NME SQL database (TDS/TLS)
+  stride: T
+  target: F4
+  description: Data or code handled by Restart worker → NME SQL database (TDS/TLS) could be modified without authorization.
+  source: generated
+  library_ref: LIB-T-GEN
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F4-T-GEN-1
+    description: Restrict write access and validate integrity for Restart worker → NME SQL database (TDS/TLS).
+    domain: access_control
+    status: proposed
+- id: T-F4-I-GEN
+  title: Information disclosure from Restart worker → NME SQL database (TDS/TLS)
+  stride: I
+  target: F4
+  description: Data handled by Restart worker → NME SQL database (TDS/TLS) could be exposed to unauthorized parties.
+  source: generated
+  library_ref: LIB-I-GEN
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F4-I-GEN-1
+    description: Classify data and restrict exposure of Restart worker → NME SQL database (TDS/TLS) to authorized
+      principals.
+    domain: data_handling_privacy
+    status: proposed
+- id: T-F4-D-GEN
+  title: Denial of service against Restart worker → NME SQL database (TDS/TLS)
+  stride: D
+  target: F4
+  description: Restart worker → NME SQL database (TDS/TLS) could be made unavailable.
+  source: generated
+  library_ref: LIB-D-GEN
+  likelihood: 3
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F4-D-GEN-1
+    description: Apply limits, timeouts and redundancy for Restart worker → NME SQL database (TDS/TLS).
+    domain: availability_resilience
+    status: proposed
+- id: T-F5-T-GEN
+  title: Tampering with Restart worker → Azure Resource Manager (HTTPS (ARM REST))
+  stride: T
+  target: F5
+  description: Data or code handled by Restart worker → Azure Resource Manager (HTTPS (ARM REST)) could be modified
+    without authorization.
+  source: generated
+  library_ref: LIB-T-GEN
+  likelihood: 4
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-F5-T-GEN-1
+    description: Restrict write access and validate integrity for Restart worker → Azure Resource Manager (HTTPS
+      (ARM REST)).
+    domain: access_control
+    status: proposed
+- id: T-F5-I-GEN
+  title: Information disclosure from Restart worker → Azure Resource Manager (HTTPS (ARM REST))
+  stride: I
+  target: F5
+  description: Data handled by Restart worker → Azure Resource Manager (HTTPS (ARM REST)) could be exposed to unauthorized
+    parties.
+  source: generated
+  library_ref: LIB-I-GEN
+  likelihood: 4
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-F5-I-GEN-1
+    description: Classify data and restrict exposure of Restart worker → Azure Resource Manager (HTTPS (ARM REST))
+      to authorized principals.
+    domain: data_handling_privacy
+    status: proposed
+- id: T-F5-D-GEN
+  title: Denial of service against Restart worker → Azure Resource Manager (HTTPS (ARM REST))
+  stride: D
+  target: F5
+  description: Restart worker → Azure Resource Manager (HTTPS (ARM REST)) could be made unavailable.
+  source: generated
+  library_ref: LIB-D-GEN
+  likelihood: 4
+  impact: 4
+  status: identified
+  mitigations:
+  - id: M-F5-D-GEN-1
+    description: Apply limits, timeouts and redundancy for Restart worker → Azure Resource Manager (HTTPS (ARM REST)).
+    domain: availability_resilience
+    status: proposed
+- id: T-F6-T-GEN
+  title: Tampering with Restart worker → Log Analytics (NME audit log) (HTTPS (Log Analytics ingestion))
+  stride: T
+  target: F6
+  description: Data or code handled by Restart worker → Log Analytics (NME audit log) (HTTPS (Log Analytics ingestion))
+    could be modified without authorization.
+  source: generated
+  library_ref: LIB-T-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F6-T-GEN-1
+    description: Restrict write access and validate integrity for Restart worker → Log Analytics (NME audit log)
+      (HTTPS (Log Analytics ingestion)).
+    domain: access_control
+    status: proposed
+- id: T-F6-I-GEN
+  title: Information disclosure from Restart worker → Log Analytics (NME audit log) (HTTPS (Log Analytics ingestion))
+  stride: I
+  target: F6
+  description: Data handled by Restart worker → Log Analytics (NME audit log) (HTTPS (Log Analytics ingestion))
+    could be exposed to unauthorized parties.
+  source: generated
+  library_ref: LIB-I-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F6-I-GEN-1
+    description: Classify data and restrict exposure of Restart worker → Log Analytics (NME audit log) (HTTPS (Log
+      Analytics ingestion)) to authorized principals.
+    domain: data_handling_privacy
+    status: proposed
+- id: T-F6-D-GEN
+  title: Denial of service against Restart worker → Log Analytics (NME audit log) (HTTPS (Log Analytics ingestion))
+  stride: D
+  target: F6
+  description: Restart worker → Log Analytics (NME audit log) (HTTPS (Log Analytics ingestion)) could be made unavailable.
+  source: generated
+  library_ref: LIB-D-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F6-D-GEN-1
+    description: Apply limits, timeouts and redundancy for Restart worker → Log Analytics (NME audit log) (HTTPS
+      (Log Analytics ingestion)).
+    domain: availability_resilience
+    status: proposed
+- id: T-F7-T-GEN
+  title: Tampering with Restart worker → Azure Bot Service (HTTPS (Bot Framework REST API))
+  stride: T
+  target: F7
+  description: Data or code handled by Restart worker → Azure Bot Service (HTTPS (Bot Framework REST API)) could
+    be modified without authorization.
+  source: generated
+  library_ref: LIB-T-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F7-T-GEN-1
+    description: Restrict write access and validate integrity for Restart worker → Azure Bot Service (HTTPS (Bot
+      Framework REST API)).
+    domain: access_control
+    status: proposed
+- id: T-F7-I-GEN
+  title: Information disclosure from Restart worker → Azure Bot Service (HTTPS (Bot Framework REST API))
+  stride: I
+  target: F7
+  description: Data handled by Restart worker → Azure Bot Service (HTTPS (Bot Framework REST API)) could be exposed
+    to unauthorized parties.
+  source: generated
+  library_ref: LIB-I-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F7-I-GEN-1
+    description: Classify data and restrict exposure of Restart worker → Azure Bot Service (HTTPS (Bot Framework
+      REST API)) to authorized principals.
+    domain: data_handling_privacy
+    status: proposed
+- id: T-F7-D-GEN
+  title: Denial of service against Restart worker → Azure Bot Service (HTTPS (Bot Framework REST API))
+  stride: D
+  target: F7
+  description: Restart worker → Azure Bot Service (HTTPS (Bot Framework REST API)) could be made unavailable.
+  source: generated
+  library_ref: LIB-D-GEN
+  likelihood: 4
+  impact: 3
+  status: identified
+  mitigations:
+  - id: M-F7-D-GEN-1
+    description: Apply limits, timeouts and redundancy for Restart worker → Azure Bot Service (HTTPS (Bot Framework
+      REST API)).
+    domain: availability_resilience
+    status: proposed
+not_applicable: []
+architectural_review: {}
+approvals: []
+references:
+- 'Generated by threatmod assess from: architecture.png, requirements.md'
+provenance:
+  ai_assisted: true
+  tool: threatmod assess
+  model: fixture
+  generated_on: '2026-11-05'
+  inputs:
+  - architecture.png
+  - requirements.md
+  extraction_sha256: 5afce8ebb08e86dda2ac6f6e980d3bc0ccf46d0a3c595b52e4b3f6b7decbaf0d
