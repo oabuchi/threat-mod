@@ -1,0 +1,41 @@
+# Threat Model Intake Request — ISMS-DEV-004 §5.0
+# Submitted by the Feature Owner at backlog refinement. Paste into the "Threat Model Intake"
+# work item (ADO) or attach to the feature epic, then run `threatmod intake intake-request.yaml`.
+# Every field is required unless marked optional.
+
+title: ""                     # Feature title as it appears on the epic
+product: NMM                  # NME | NMM | Platform | Internal
+owner: ""                     # Feature Owner (Development Team lead)
+owner_email: ""               # optional
+work_item: ""                 # ADO epic/feature URL
+target_release: ""            # e.g. NMM 7.5
+description: >-               # 2-4 sentences: what it does, for whom, what changes
+  ""
+repositories: []              # e.g. [nerdio/nmm-core]
+data_classification: internal # highest data classification in scope: public | internal | confidential | restricted
+dev_start: ""                 # planned development start, YYYY-MM-DD (used for lead-time check)
+emergency: false              # hotfix / emergency change under ISMS-DEV-003 §9.1 item 4
+
+# Triage — answer every question true/false. Any true requires a threat model.
+triage:
+  architectural_change: false     # new/changed service, component, trust boundary, topology, Azure resource type
+  data_handling_change: false     # collects, stores, processes, transmits, exports or deletes data in a new way
+  new_integration: false          # new/changed external integration (Graph/ARM, PSA/RMM, IdP, webhook, 3rd-party API)
+  authn_authz_change: false       # authentication, authorization, RBAC, tokens, sessions, secrets handling
+  new_external_entry_point: false # new internet-reachable endpoint, file upload, input parser
+  privileged_azure_operation: false # creates/modifies/grants privileged permissions in customer Azure / Entra tenants
+  cross_tenant_data: false        # data or actions could cross MSP / customer / tenant boundaries
+  restricted_data: false          # credentials, keys, tokens, personal data under GDPR/CCPA
+  cryptography_change: false      # new/changed algorithms, keys, certificates, key storage
+
+# Intake package — attach files to inputs/ or give URLs. Required items depend on the computed tier
+# (Tier 1: requirements + data_flow; Tier 2: also identity_permissions + data_inventory).
+package:
+  requirements: ""              # file name under inputs/ or URL
+  data_flow: ""                 # diagram file (png/jpg/pdf/drawio/tm7) or URL
+  identity_permissions: ""      # Tier 2
+  data_inventory: ""            # Tier 2
+
+# Optional context for the Security Team
+external_parties: []          # third-party services or vendors involved
+notes: ""

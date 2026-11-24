@@ -14,6 +14,23 @@ This repository puts into practice the threat modelling requirements of **ISMS-D
 | Worked Tier 2 example | [`examples/tm-nmm-48211/`](examples/tm-nmm-48211/) ([rendered report](examples/tm-nmm-48211/threat-model-report.md)) |
 | Diagram-to-SIA example | [`examples/assess-demo/`](examples/assess-demo/) ([SIA](examples/assess-demo/output/security-impact-assessment.md)) |
 
+## Intake: how a feature enters the process
+
+The Feature Owner fills in `templates/intake-request.yaml` (or the "Threat model intake" issue form) at backlog refinement
+and attaches the package: requirements + data flow diagram for Tier 1, plus identities/permissions and a data inventory for Tier 2.
+
+```bash
+python -m threatmod intake intake-request.yaml --id TM-NMM-49870 --attach dfd.png
+#   computed tier: 2 (Enhanced)        state: NEEDS_INFO
+#   ! package item required for tier 2: identity_permissions
+#   routing: Security Team facilitator assigned; STRIDE session scheduled; ...
+#   due (working days from submission): completeness_decision ≤ 2, facilitator_assigned ≤ 2, session_scheduled ≤ 5
+```
+
+The command computes the tier, checks the package, writes `threat-models/<id>/threat-model.yaml` with triage filled in, and exits 2
+while the request still needs information. `.github/workflows/threat-model-intake.yml` runs it on every intake issue and comments the result.
+See `examples/intake-demo/` and policy §5.0.
+
 ## Quick start for a feature team
 
 ```bash

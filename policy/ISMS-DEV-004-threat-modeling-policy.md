@@ -233,12 +233,43 @@ The pipeline verifies that the threat model and its security requirements were a
 
 ## 5. Procedures
 
+### 5.0 Intake
+
+Intake is how a feature enters threat modelling. It runs at backlog refinement (ISMS-DEV-003 §4.2), before design starts, and ends when the request is accepted, held for more information, or closed because no model is required. The rule set's `intake` section holds the thresholds.
+
+**Who and when.** The Feature Owner submits an Intake Request for every new Story, Epic or Change Request that reaches backlog refinement, and for any existing feature whose scope changes in a way that re-triggers modelling (§4.10). A request must reach the Security Team at least 3 working days before development starts for Tier 1 and 5 for Tier 2. A pull request that touches security-relevant code without a model (§4.1 item 5) is the safety net, not the normal route.
+
+**What is submitted.** The Intake Request (`templates/intake-request.yaml`, or the "Threat model intake" issue form in repositories) carries: the feature title, product, owner, work item, target release, repositories and a short description; the highest data classification in scope; the nine triage answers; the planned development start; whether this is an emergency change; and the intake package. The package depends on the computed tier:
+
+| Tier | Package required at intake |
+|---|---|
+| 0 | None |
+| 1 | Requirements or user stories; an architecture or data flow diagram showing components, connections, trust boundaries and entry points |
+| 2 | As Tier 1, plus the identities and permissions the feature uses (managed identities, app registrations, ARM roles, Graph permissions, service accounts) and a data inventory with classification and retention |
+
+**Steps.**
+
+| Step | Who | Action | Within |
+|---|---|---|---|
+| 1. Submit | Feature Owner | Complete the Intake Request; attach the package to `threat-models/<id>/inputs/` or link it. | Backlog refinement |
+| 2. Auto-triage | Tooling (`threatmod intake`) | Compute the tier from the triage answers and data classification; check required fields and the package for that tier; create the model file with triage filled in; return the state: `closed_tier0`, `needs_info` or `accepted`, with routing and due dates. | Same day |
+| 3. Complete | Feature Owner | If `needs_info`, add the missing items; triage re-runs. | Before step 4 |
+| 4. Accept | Security Team | Confirm the triage answers against the package, raise the tier if warranted (never lower it), and accept. | 2 working days from submission |
+| 5. Route | Security Team | Tier 1: Development Team runs the model (template or `threatmod assess`), peer design approval, Security Team spot-review. Tier 2: assign a facilitator and schedule the STRIDE session. | Facilitator within 2 working days; session within 5 |
+| 6. Hand over | Feature Owner | Modelling proceeds under §4.4 to §4.9 (and §4.12 if the draft was AI-assisted). | — |
+
+**Exit criteria.** An intake is complete when the model identifier exists, the tier is set and confirmed, the package is complete for that tier, and for Tier 2 a facilitator and a session date are recorded. Tier 0 requests close with the triage record retained on the work item as evidence (§4.1 item 1).
+
+**Emergency changes.** For hotfixes under ISMS-DEV-003 §9.1 item 4, triage runs within 1 working day. The Security Team may allow the change to proceed before the model is complete only under a §15 exception (CPTO for High or Critical), and the model must be completed within 10 working days of release.
+
+**Re-intake.** A feature re-enters intake when a §4.10 re-modelling trigger fires, or when the Security Team finds at any gate that the triage answers no longer match the implementation.
+
 ### 5.1 Team Workflow
 
 | Step | When | Who | Action | Output |
 |---|---|---|---|---|
-| 1 | Backlog refinement | Feature Owner | `threatmod init --id TM-NMM-48211 ...` and answer triage | Model file with triage |
-| 2 | Backlog refinement | Feature Owner | `threatmod triage <file> --write` (or `threatmod assess` from a diagram, then `threatmod sign-off` after review, §4.12) | Required tier |
+| 1 | Backlog refinement | Feature Owner | Submit the Intake Request (§5.0); `threatmod intake` creates the model with triage filled in | Model file with triage; intake state |
+| 2 | Backlog refinement | Security Team | Confirm the tier and accept the intake; Tier 2: assign facilitator (or `threatmod assess` from the package, then `threatmod sign-off` after review, §4.12) | Accepted intake; required tier |
 | 3 | Design | Dev Team (Security Team for Tier 2) | Model assets, zones, elements, flows and entry points | Scoped model |
 | 4 | Design | Dev Team | `threatmod generate <file> --write`, then add manual threats | STRIDE threat set |
 | 5 | Design session | Dev Team + Security Team | Score, treat, link work items, complete §6.3 review (Tier 2) | Treated model |
@@ -319,6 +350,8 @@ Changes to `policy/`, `catalog/`, `schema/` and `threatmod/` are made by pull re
 | KPI | Target | Frequency |
 |---|---|---|
 | Tier 1/2 features released with a verified threat model | 100% | Monthly |
+| Intake requests accepted or held within 2 working days | ≥ 95% | Monthly |
+| Features reaching development without an intake record (caught by the PR check) | 0 | Monthly |
 | AI-drafted models validated before design approval | 100% | Monthly |
 | Committed mitigations implemented with evidence at release | 100% | Per release |
 | Security-relevant PRs passing `check-pr` without exemption | ≥ 95% | Monthly |
@@ -335,7 +368,9 @@ Changes to `policy/`, `catalog/`, `schema/` and `threatmod/` are made by pull re
 | Schema | `schema/threat-model.schema.json` | Structure of a feature threat model |
 | Threat library | `catalog/stride-threat-library.yaml` | Nerdio STRIDE threats and mitigations |
 | Template | `templates/threat-model.template.yaml` | Starting point for `threatmod init` |
-| CLI | `threatmod/` | init, triage, generate, validate, report, check-pr, workitems, assess |
+| Intake form | `templates/intake-request.yaml`, `.github/ISSUE_TEMPLATE/threat-model-intake.yml` | What the Feature Owner submits (§5.0) |
+| Intake workflow | `.github/workflows/threat-model-intake.yml` | Auto-triage on issue submission |
+| CLI | `threatmod/` | intake, init, triage, generate, validate, report, check-pr, workitems, assess, sign-off, mark-implemented, coverage |
 | GitHub workflow | `.github/workflows/threat-model.yml` | Reusable PR and release gate |
 | Azure DevOps template | `pipelines/threat-model-gate.yml` | Release-stage gate and evidence |
 | Assess workflow | `.github/workflows/threat-model-assess.yml` | Diagram/requirements upload to draft model and SIA |

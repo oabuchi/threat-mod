@@ -268,3 +268,49 @@ remodel_triggers:
   - new attack surface identified after design approval
   - Critical or High vulnerability in the feature (RCA per ISMS-DEV-003 §12.3)
   - Tier 2 feature reaching 12 months since last verification
+
+# -----------------------------------------------------------------------------
+# 10. Intake (ISMS-DEV-004 §5.0). How a feature enters threat modelling.
+#     Submitted at backlog refinement (ISMS-DEV-003 §4.2) by the Feature Owner,
+#     triaged by threatmod, routed by the Security Team.
+# -----------------------------------------------------------------------------
+intake:
+  states: [submitted, needs_info, accepted, closed_tier0, in_modelling]
+  # Working-day SLAs measured from submission.
+  sla_working_days:
+    auto_triage: 0            # same day: threatmod intake runs on submission
+    completeness_decision: 2  # Security Team: accepted or needs_info
+    facilitator_assigned: 2   # Tier 2 only
+    session_scheduled: 5      # Tier 2 STRIDE session held within
+    lead_time_before_dev_start:
+      1: 3
+      2: 5
+  # What the submitter must attach, by computed tier. Keys are package item ids.
+  required_package:
+    0: []
+    1: [requirements, data_flow]
+    2: [requirements, data_flow, identity_permissions, data_inventory]
+  package_items:
+    requirements:
+      text: Requirements or user stories for the feature (ADO epic/feature link, PRD, or document)
+      accepts: [md, docx, pdf, txt, url]
+    data_flow:
+      text: Architecture or data flow diagram showing components, connections, trust boundaries and entry points
+      accepts: [png, jpg, jpeg, webp, pdf, vsdx, drawio, tm7, url]
+    identity_permissions:
+      text: Identities and permissions the feature uses (managed identities, app registrations, ARM roles, Graph permissions, service accounts)
+      accepts: [md, docx, xlsx, csv, txt, url]
+    data_inventory:
+      text: Data the feature creates, reads, stores or transmits, with classification and retention
+      accepts: [md, docx, xlsx, csv, txt, url]
+  # Fields every intake form must carry.
+  required_fields: [title, product, owner, work_item, target_release, description, data_classification, repositories]
+  # Fast path for hotfixes / emergency changes (ISMS-DEV-003 §9.1 item 4).
+  emergency:
+    triage_within_working_days: 1
+    deferral_requires: exception   # §15 exception, CPTO for High/Critical
+    remodel_within_working_days: 10
+  routing:
+    0: Record retained on the work item; no further action. Re-intake if the scope changes.
+    1: Development Team runs the model (template or assess); peer design approval; Security Team spot-review.
+    2: Security Team facilitator assigned; STRIDE session scheduled; §6.3 review; Security Team design approval.

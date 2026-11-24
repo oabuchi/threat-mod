@@ -1,6 +1,7 @@
 """threatmod — automation for the Nerdio Threat Modelling Policy (ISMS-DEV-004).
 
 Commands
+  intake     intake request (form or issue body) -> triaged model, package check, routing (§5.0)
   init       scaffold a feature threat model
   triage     compute the required tier from triage answers + data classification
   generate   enumerate STRIDE-per-element threats from the threat library
@@ -948,7 +949,8 @@ def main(argv=None):
     s.add_argument("paths", nargs="+"); s.add_argument("--stage", choices=["design", "release"], default="design")
     s.add_argument("--format", choices=["md", "json"], default="md"); s.add_argument("--out")
 
-    from . import assess as _assess
+    from . import assess as _assess, intake as _intake
+    _intake.add_parser(sub)
     _assess.add_parser(sub)
 
     a = p.parse_args(argv)
